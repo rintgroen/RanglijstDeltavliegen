@@ -24,19 +24,28 @@ function app_is_admin(): bool {
     return app_area() === 'admin';
 }
 
+function app_is_scoring(): bool {
+    return app_area() === 'scoring';
+}
+
 function app_asset(string $path): string {
     $path = ltrim($path, '/');
-    return app_is_admin() ? '../public/assets/' . $path : 'assets/' . $path;
+    return (app_is_admin() || app_is_scoring()) ? '../public/assets/' . $path : 'assets/' . $path;
 }
 
 function app_public_url(string $path): string {
     $path = ltrim($path, '/');
-    return app_is_admin() ? '../public/' . $path : $path;
+    return (app_is_admin() || app_is_scoring()) ? '../public/' . $path : $path;
 }
 
 function app_admin_url(string $path): string {
     $path = ltrim($path, '/');
     return app_is_admin() ? $path : '../admin/' . $path;
+}
+
+function app_scoring_url(string $path): string {
+    $path = ltrim($path, '/');
+    return app_is_scoring() ? $path : '../scoring/' . $path;
 }
 
 function app_db_or_fail(): PDO {
@@ -113,18 +122,37 @@ function app_nav_link(string $href, string $label, bool $active = false, string 
     echo '<a class="' . h($classes) . '" href="' . h($href) . '"' . ($active ? ' aria-current="page"' : '') . '>' . h($label) . '</a>';
 }
 
-function app_public_nav(string $active = ''): void {
-    $items = [
-        'home' => ['Home', 'home.php'],
-        'ranking' => ['Klasse 1', 'ranking.php'],
-        'sportclass' => ['Sportklasse', 'sportclass.php'],
-        'competitions' => ['Wedstrijden', 'competitionlist.php'],
-        'explanation' => ['Toelichting', 'explanation.php'],
-    ];
-    echo '<nav class="site-nav" aria-label="Publieke navigatie">';
+function app_public_nav_cluster(string $label, array $items, string $active, string $id = '', string $extraClass = ''): void {
+    $hasLabel = $label !== '';
+    $hasActive = in_array($active, array_keys($items), true);
+    $classes = trim('nav-cluster ' . $extraClass . ' ' . (!$hasLabel ? 'nav-cluster-single ' : '') . ($hasActive ? 'has-active' : ''));
+    $labelAttr = $hasLabel && $id !== '' ? ' role="group" aria-labelledby="' . h($id) . '"' : '';
+
+    echo '<div class="' . h($classes) . '"' . $labelAttr . '>';
+    if ($hasLabel) {
+        echo '<span class="nav-group-label"' . ($id !== '' ? ' id="' . h($id) . '"' : '') . '>' . h($label) . '</span>';
+    }
     foreach ($items as $key => $item) {
         app_nav_link(app_public_url($item[1]), $item[0], $active === $key);
     }
+    echo '</div>';
+}
+
+function app_public_nav(string $active = ''): void {
+    echo '<nav class="site-nav public-nav" aria-label="Publieke navigatie">';
+    app_public_nav_cluster('', [
+        'home' => ['Home', 'home.php'],
+    ], $active);
+    app_public_nav_cluster('Ranglijst', [
+        'ranking' => ['Klasse 1', 'ranking.php'],
+        'sportclass' => ['Sportklasse', 'sportclass.php'],
+        'competitions' => ['NK Wedstrijden', 'competitionlist.php'],
+        'explanation' => ['Toelichting', 'explanation.php'],
+    ], $active, 'public-nav-ranking');
+    app_public_nav_cluster('Wedstrijden', [
+        'scoring' => ['Scores', 'scoring.php'],
+        'track_upload' => ['Track upload', 'track_upload.php'],
+    ], $active, 'public-nav-competitions', 'nav-cluster-wedstrijden');
     echo '</nav>';
 }
 
@@ -134,6 +162,7 @@ function app_admin_nav(string $active = ''): void {
         'pilots' => ['Piloten', 'pilots.php'],
         'world_points' => ['WPRS-punten', 'world_points.php'],
         'competition_upload' => ['Wedstrijd upload', 'competition_upload.php'],
+        'scorers' => ['Scorers', 'scorers.php'],
         'memories' => ['Herinneringen', 'memories.php'],
         'logout' => ['Uitloggen', 'logout.php'],
     ];
@@ -144,17 +173,37 @@ function app_admin_nav(string $active = ''): void {
     echo '</nav>';
 }
 
+function app_scoring_nav(string $active = '', string $userLabel = ''): void {
+    $items = [
+        'dashboard' => ['Dashboard', 'index.php'],
+        'logout' => ['Uitloggen', 'logout.php'],
+    ];
+    echo '<nav class="site-nav scoring-nav" aria-label="Scoring navigatie">';
+    foreach ($items as $key => $item) {
+        if ($key === 'logout' && $userLabel !== '') {
+            echo '<span class="nav-status">Ingelogd als ' . h($userLabel) . '</span>';
+        }
+        app_nav_link($item[1], $item[0], $active === $key);
+    }
+    echo '</nav>';
+}
+
 function app_page_start(string $title, array $options = []): void {
     $activePublic = $options['active_public'] ?? '';
     $activeAdmin = $options['active_admin'] ?? '';
+    $activeScoring = $options['active_scoring'] ?? '';
+    $scoringUser = $options['scoring_user'] ?? '';
     $description = $options['description'] ?? app_site_name();
     $bodyClass = trim('container ' . ($options['body_class'] ?? ''));
     $extraHead = $options['extra_head'] ?? '';
     $showPublicNav = $options['show_public_nav'] ?? true;
     $showAdminNav = $options['show_admin_nav'] ?? app_is_admin();
+    $showScoringNav = $options['show_scoring_nav'] ?? app_is_scoring();
     $brandHref = app_public_url('home.php');
     if (app_is_admin()) {
         $brandHref = app_admin_url('dashboard.php');
+    } elseif (app_is_scoring()) {
+        $brandHref = app_scoring_url('index.php');
     }
     ?>
 <!doctype html>
@@ -181,6 +230,9 @@ function app_page_start(string $title, array $options = []): void {
     if ($showAdminNav) {
         app_admin_nav($activeAdmin);
     }
+    if ($showScoringNav) {
+        app_scoring_nav($activeScoring, $scoringUser);
+    }
 }
 
 function app_page_end(?string $footerText = null): void {
@@ -190,6 +242,10 @@ function app_page_end(?string $footerText = null): void {
     ?>
 <footer class="site-footer muted">
   <p><?= $footerHtml ?></p>
+  <nav class="footer-links" aria-label="Snelle toegang">
+    <a href="<?= h(app_admin_url('dashboard.php')) ?>">Admin dashboard</a>
+    <a href="<?= h(app_scoring_url('index.php')) ?>">Scorer dashboard</a>
+  </nav>
 </footer>
 <script src="<?= h(app_asset('script.js')) ?>" defer></script>
 </body>

@@ -1,0 +1,2255 @@
+<?php
+require_once __DIR__ . '/app.php';
+
+function scoring_timezone(): DateTimeZone {
+    static $tz = null;
+    if ($tz === null) {
+        $tz = new DateTimeZone(date_default_timezone_get() ?: 'Europe/Amsterdam');
+    }
+    return $tz;
+}
+
+function scoring_utc_timezone(): DateTimeZone {
+    static $tz = null;
+    if ($tz === null) {
+        $tz = new DateTimeZone('UTC');
+    }
+    return $tz;
+}
+
+function scoring_now_utc(): string {
+    return (new DateTimeImmutable('now', scoring_utc_timezone()))->format('Y-m-d H:i:s');
+}
+
+function scoring_local_input_to_utc_sql(string $value): string {
+    $value = trim($value);
+    $dt = DateTimeImmutable::createFromFormat('Y-m-d\TH:i', $value, scoring_timezone());
+    if (!$dt) {
+        $dt = new DateTimeImmutable($value, scoring_timezone());
+    }
+    return $dt->setTimezone(scoring_utc_timezone())->format('Y-m-d H:i:s');
+}
+
+function scoring_utc_sql_to_local_input(?string $value): string {
+    if (!$value) {
+        return '';
+    }
+    $dt = new DateTimeImmutable($value, scoring_utc_timezone());
+    return $dt->setTimezone(scoring_timezone())->format('Y-m-d\TH:i');
+}
+
+function scoring_utc_sql_to_local_date(?string $value): string {
+    if (!$value) {
+        return '';
+    }
+    $dt = new DateTimeImmutable($value, scoring_utc_timezone());
+    return $dt->setTimezone(scoring_timezone())->format('Y-m-d');
+}
+
+function scoring_utc_sql_to_local_time(?string $value): string {
+    if (!$value) {
+        return '';
+    }
+    $dt = new DateTimeImmutable($value, scoring_utc_timezone());
+    return $dt->setTimezone(scoring_timezone())->format('H:i');
+}
+
+function scoring_utc_sql_to_display(?string $value): string {
+    if (!$value) {
+        return '-';
+    }
+    $dt = new DateTimeImmutable($value, scoring_utc_timezone());
+    return $dt->setTimezone(scoring_timezone())->format('Y-m-d H:i');
+}
+
+function scoring_gate_local_to_utc_sql(string $taskDate, string $time): string {
+    $dt = new DateTimeImmutable($taskDate . ' ' . trim($time), scoring_timezone());
+    return $dt->setTimezone(scoring_utc_timezone())->format('Y-m-d H:i:s');
+}
+
+function scoring_normalize_email(string $email): string {
+    return strtolower(trim($email));
+}
+
+function scoring_current_scorer(PDO $pdo): ?array {
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        @session_start();
+    }
+    $id = isset($_SESSION['scorer_id']) ? (int)$_SESSION['scorer_id'] : 0;
+    if ($id <= 0) {
+        return null;
+    }
+    $stmt = $pdo->prepare('SELECT id, email, name, active FROM rankings_scorers WHERE id = ? AND active = 1 LIMIT 1');
+    $stmt->execute([$id]);
+    $scorer = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$scorer) {
+        unset($_SESSION['scorer_id']);
+        return null;
+    }
+    return $scorer;
+}
+
+function scoring_require_scorer(PDO $pdo): array {
+    $scorer = scoring_current_scorer($pdo);
+    if (!$scorer) {
+        header('Location: login.php');
+        exit;
+    }
+    return $scorer;
+}
+
+function scoring_site_base_url(): string {
+    if (defined('SITE_BASE_URL') && trim((string)SITE_BASE_URL) !== '') {
+        return rtrim((string)SITE_BASE_URL, '/');
+    }
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $base = defined('BASE_URL') ? (string)BASE_URL : '/';
+    return rtrim($scheme . '://' . $host . '/' . trim($base, '/'), '/');
+}
+
+function scoring_absolute_url(string $path): string {
+    return scoring_site_base_url() . '/' . ltrim($path, '/');
+}
+
+function scoring_set_mail_error(string $message): void {
+    $GLOBALS['SCORING_LAST_MAIL_ERROR'] = $message;
+}
+
+function scoring_last_mail_error(): string {
+    return (string)($GLOBALS['SCORING_LAST_MAIL_ERROR'] ?? '');
+}
+
+function scoring_mail_from(): string {
+    $email = defined('SCORING_MAIL_FROM') ? trim((string)SCORING_MAIL_FROM) : '';
+    $name = defined('SCORING_MAIL_FROM_NAME') ? trim((string)SCORING_MAIL_FROM_NAME) : app_site_name();
+    if ($email === '') {
+        return '';
+    }
+    if ($name === '') {
+        return $email;
+    }
+    $name = str_replace(['"', '<', '>'], '', $name);
+    return $name . ' <' . $email . '>';
+}
+
+function scoring_html_email_shell(string $title, string $bodyHtml): string {
+    return '<!doctype html><html><body style="margin:0;background:#edf7fc;font-family:Arial,Helvetica,sans-serif;color:#102436;">'
+        . '<div style="max-width:640px;margin:0 auto;padding:24px;">'
+        . '<div style="background:#ffffff;border:1px solid #bfd8e8;border-radius:8px;padding:22px;">'
+        . '<h1 style="font-size:22px;line-height:1.25;margin:0 0 14px;color:#0b2033;">' . h($title) . '</h1>'
+        . $bodyHtml
+        . '<p style="margin:22px 0 0;color:#516779;font-size:13px;">' . h(app_site_name()) . '</p>'
+        . '</div></div></body></html>';
+}
+
+function scoring_postmark_request(array $payload): bool {
+    $token = defined('POSTMARK_SERVER_TOKEN') ? trim((string)POSTMARK_SERVER_TOKEN) : '';
+    if ($token === '') {
+        scoring_set_mail_error('Postmark server token is not configured.');
+        return false;
+    }
+    $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        scoring_set_mail_error('Could not encode Postmark payload.');
+        return false;
+    }
+
+    $url = 'https://api.postmarkapp.com/email';
+    $headers = [
+        'Accept: application/json',
+        'Content-Type: application/json',
+        'X-Postmark-Server-Token: ' . $token,
+    ];
+
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        $response = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        if ($response === false || $status < 200 || $status >= 300) {
+            scoring_set_mail_error($curlError !== '' ? $curlError : ('Postmark HTTP ' . $status . ': ' . (string)$response));
+            return false;
+        }
+        scoring_set_mail_error('');
+        return true;
+    }
+
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => implode("\r\n", $headers),
+            'content' => $json,
+            'ignore_errors' => true,
+            'timeout' => 10,
+        ],
+    ]);
+    $response = @file_get_contents($url, false, $context);
+    $status = 0;
+    if (isset($http_response_header) && is_array($http_response_header)) {
+        foreach ($http_response_header as $header) {
+            if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $m)) {
+                $status = (int)$m[1];
+                break;
+            }
+        }
+    }
+    if ($response === false || $status < 200 || $status >= 300) {
+        scoring_set_mail_error('Postmark HTTP ' . $status . ': ' . (string)$response);
+        return false;
+    }
+    scoring_set_mail_error('');
+    return true;
+}
+
+function scoring_send_email(string $to, string $subject, string $textBody, string $htmlBody = '', string $tag = 'scoring'): bool {
+    $from = scoring_mail_from();
+    if ($from === '') {
+        scoring_set_mail_error('SCORING_MAIL_FROM is not configured.');
+        return false;
+    }
+
+    $postmarkToken = defined('POSTMARK_SERVER_TOKEN') ? trim((string)POSTMARK_SERVER_TOKEN) : '';
+    if ($postmarkToken !== '') {
+        $payload = [
+            'From' => $from,
+            'To' => $to,
+            'Subject' => $subject,
+            'TextBody' => $textBody,
+            'Tag' => $tag,
+        ];
+        if ($htmlBody !== '') {
+            $payload['HtmlBody'] = $htmlBody;
+        }
+        $messageStream = defined('POSTMARK_MESSAGE_STREAM') ? trim((string)POSTMARK_MESSAGE_STREAM) : '';
+        if ($messageStream !== '') {
+            $payload['MessageStream'] = $messageStream;
+        }
+        return scoring_postmark_request($payload);
+    }
+
+    $headers = ['From: ' . $from];
+    if ($htmlBody !== '') {
+        $boundary = 'scoring-' . bin2hex(random_bytes(8));
+        $headers[] = 'MIME-Version: 1.0';
+        $headers[] = 'Content-Type: multipart/alternative; boundary="' . $boundary . '"';
+        $body = '--' . $boundary . "\r\n"
+            . "Content-Type: text/plain; charset=UTF-8\r\n\r\n"
+            . $textBody . "\r\n"
+            . '--' . $boundary . "\r\n"
+            . "Content-Type: text/html; charset=UTF-8\r\n\r\n"
+            . $htmlBody . "\r\n"
+            . '--' . $boundary . "--\r\n";
+    } else {
+        $headers[] = 'Content-Type: text/plain; charset=UTF-8';
+        $body = $textBody;
+    }
+
+    $sent = @mail($to, $subject, $body, implode("\r\n", $headers));
+    scoring_set_mail_error($sent ? '' : 'PHP mail() returned false.');
+    return $sent;
+}
+
+function scoring_send_magic_link(string $email, string $link): bool {
+    $subject = app_site_name() . ' scorer login';
+    $text = "Hallo,\n\nGebruik deze link om in te loggen als scorer:\n\n" . $link
+        . "\n\nDeze link verloopt automatisch. Heb je deze link niet aangevraagd, dan kun je deze mail negeren.\n";
+    $html = scoring_html_email_shell('Je scorer loginlink', ''
+        . '<p style="margin:0 0 14px;">Hallo,</p>'
+        . '<p style="margin:0 0 18px;">Met onderstaande knop log je tijdelijk in bij de competitie scoring.</p>'
+        . '<p style="margin:0 0 18px;"><a href="' . h($link) . '" style="background:#0f6fa8;border-radius:6px;color:#ffffff;display:inline-block;font-weight:bold;padding:11px 16px;text-decoration:none;">Inloggen als scorer</a></p>'
+        . '<p style="margin:0 0 12px;color:#516779;">Deze link verloopt automatisch. Heb je deze link niet aangevraagd, dan kun je deze mail negeren.</p>'
+        . '<p style="margin:0;color:#516779;font-size:13px;">Werkt de knop niet? Open deze link:<br><a href="' . h($link) . '">' . h($link) . '</a></p>');
+    return scoring_send_email($email, $subject, $text, $html, 'scorer-login');
+}
+
+function scoring_send_scorer_welcome_email(string $email, ?string $name = null): bool {
+    $loginUrl = scoring_absolute_url('scoring/login.php');
+    $greeting = trim((string)$name) !== '' ? 'Hallo ' . trim((string)$name) . ',' : 'Hallo,';
+    $subject = 'Welkom bij de competitie scoring van ' . app_site_name();
+    $text = $greeting . "\n\n"
+        . "Je e-mailadres is toegevoegd als scorer voor " . app_site_name() . ".\n\n"
+        . "Je kunt via deze pagina een tijdelijke loginlink aanvragen:\n" . $loginUrl . "\n\n"
+        . "Na het inloggen kun je competities aanmaken, waypoints uploaden, taken instellen, IGC-tracklogs koppelen, resultaten controleren en publiceren.\n";
+    $html = scoring_html_email_shell('Welkom als scorer', ''
+        . '<p style="margin:0 0 14px;">' . h($greeting) . '</p>'
+        . '<p style="margin:0 0 14px;">Je e-mailadres is toegevoegd als scorer voor ' . h(app_site_name()) . '.</p>'
+        . '<p style="margin:0 0 18px;">Via de scoring omgeving kun je competities aanmaken, waypoints uploaden, taken instellen, IGC-tracklogs koppelen, resultaten controleren en publiceren.</p>'
+        . '<p style="margin:0 0 18px;"><a href="' . h($loginUrl) . '" style="background:#0f6fa8;border-radius:6px;color:#ffffff;display:inline-block;font-weight:bold;padding:11px 16px;text-decoration:none;">Open de scoring omgeving</a></p>'
+        . '<p style="margin:0;color:#516779;font-size:13px;">Je logt in door op die pagina een tijdelijke loginlink aan te vragen voor dit e-mailadres.</p>');
+    return scoring_send_email($email, $subject, $text, $html, 'scorer-welcome');
+}
+
+function scoring_send_competition_buddy_email(string $email, string $competitionName, ?string $name = null, ?string $inviterName = null): bool {
+    $loginUrl = scoring_absolute_url('scoring/login.php');
+    $greeting = trim((string)$name) !== '' ? 'Hallo ' . trim((string)$name) . ',' : 'Hallo,';
+    $inviter = trim((string)$inviterName);
+    $subject = 'Je bent toegevoegd als scorer voor ' . $competitionName;
+    $text = $greeting . "\n\n"
+        . ($inviter !== '' ? $inviter . " heeft je toegevoegd als scorer voor:\n" : "Je bent toegevoegd als scorer voor:\n")
+        . $competitionName . "\n\n"
+        . "Je kunt via deze pagina een tijdelijke loginlink aanvragen:\n" . $loginUrl . "\n\n"
+        . "Na het inloggen kun je deze competitie beheren, taken aanpassen, tracklogs koppelen, scoren en publiceren.\n";
+    $html = scoring_html_email_shell('Toegevoegd als scorer', ''
+        . '<p style="margin:0 0 14px;">' . h($greeting) . '</p>'
+        . '<p style="margin:0 0 14px;">' . ($inviter !== '' ? h($inviter) . ' heeft je toegevoegd als scorer voor:' : 'Je bent toegevoegd als scorer voor:') . '</p>'
+        . '<p style="margin:0 0 18px;font-weight:bold;">' . h($competitionName) . '</p>'
+        . '<p style="margin:0 0 18px;">Na het inloggen kun je deze competitie beheren, taken aanpassen, tracklogs koppelen, scoren en publiceren.</p>'
+        . '<p style="margin:0 0 18px;"><a href="' . h($loginUrl) . '" style="background:#0f6fa8;border-radius:6px;color:#ffffff;display:inline-block;font-weight:bold;padding:11px 16px;text-decoration:none;">Open de scoring omgeving</a></p>'
+        . '<p style="margin:0;color:#516779;font-size:13px;">Je logt in door op die pagina een tijdelijke loginlink aan te vragen voor dit e-mailadres.</p>');
+    return scoring_send_email($email, $subject, $text, $html, 'scorer-buddy');
+}
+
+function scoring_upload_root(): string {
+    return __DIR__ . '/../public/uploads/scoring';
+}
+
+function scoring_public_upload_path(string $relative): string {
+    return __DIR__ . '/../public/' . ltrim($relative, '/');
+}
+
+function scoring_safe_filename(string $name, string $fallbackExt = 'dat'): string {
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    $ext = preg_replace('/[^a-z0-9]/', '', $ext ?: $fallbackExt);
+    return date('Ymd_His') . '_' . bin2hex(random_bytes(6)) . '.' . ($ext ?: $fallbackExt);
+}
+
+function scoring_ensure_upload_dir(string $kind): array {
+    $subdir = trim($kind, '/') . '/' . date('Y/m');
+    $full = scoring_upload_root() . '/' . $subdir;
+    if (!is_dir($full) && !@mkdir($full, 0755, true)) {
+        throw new RuntimeException('Uploadmap kon niet worden aangemaakt.');
+    }
+    return [$full, 'uploads/scoring/' . $subdir];
+}
+
+function scoring_placeholder_email(string $pilotName, string $fileHash): string {
+    $slug = strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', $pilotName), '-'));
+    if ($slug === '') {
+        $slug = 'pilot';
+    }
+    return substr($slug, 0, 40) . '+' . substr($fileHash, 0, 12) . '@scoring.local';
+}
+
+function scoring_is_placeholder_email(?string $email): bool {
+    return is_string($email) && substr(strtolower($email), -14) === '@scoring.local';
+}
+
+function scoring_display_pilot_email(?string $email): string {
+    return scoring_is_placeholder_email($email) ? 'geen e-mail' : (string)$email;
+}
+
+function scoring_store_tracklog_upload(PDO $pdo, array $file, string $pilotName, ?string $pilotEmail = null): int {
+    $pilotName = trim($pilotName);
+    if ($pilotName === '') {
+        throw new RuntimeException('Vul een pilotnaam in.');
+    }
+    if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+        throw new RuntimeException('Upload een IGC-bestand.');
+    }
+    if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Uploadfout: code ' . (int)$file['error']);
+    }
+
+    $maxMb = defined('SCORING_UPLOAD_MAX_MB') ? (int)SCORING_UPLOAD_MAX_MB : 12;
+    if (($file['size'] ?? 0) > $maxMb * 1024 * 1024) {
+        throw new RuntimeException('Bestand is te groot (max ' . $maxMb . ' MB).');
+    }
+
+    $originalName = (string)($file['name'] ?? 'tracklog.igc');
+    $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+    if ($ext !== 'igc') {
+        throw new RuntimeException('Upload een bestand met extensie .igc.');
+    }
+
+    $tmpName = (string)($file['tmp_name'] ?? '');
+    if ($tmpName === '' || !is_file($tmpName)) {
+        throw new RuntimeException('Uploadbestand is niet beschikbaar.');
+    }
+
+    $igc = scoring_parse_igc_file($tmpName);
+    $hash = hash_file('sha256', $tmpName);
+    $email = scoring_normalize_email((string)$pilotEmail);
+    if ($email === '') {
+        $email = scoring_placeholder_email($pilotName, $hash);
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new RuntimeException('Vul een geldig e-mailadres in of laat het leeg.');
+    }
+
+    [$dir, $urlDir] = scoring_ensure_upload_dir('tracklogs');
+    $filename = scoring_safe_filename($originalName, 'igc');
+    $relativePath = $urlDir . '/' . $filename;
+    if (!@move_uploaded_file($tmpName, $dir . '/' . $filename)) {
+        throw new RuntimeException('Tracklog opslaan mislukt.');
+    }
+
+    $stmt = $pdo->prepare(
+        'INSERT INTO rankings_scoring_tracklogs
+         (pilot_name, pilot_email, original_filename, storage_path, file_hash,
+          first_fix_at, last_fix_at, min_lat, max_lat, min_lon, max_lon, fix_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           pilot_name = VALUES(pilot_name),
+           original_filename = VALUES(original_filename),
+           storage_path = VALUES(storage_path),
+           first_fix_at = VALUES(first_fix_at),
+           last_fix_at = VALUES(last_fix_at),
+           min_lat = VALUES(min_lat),
+           max_lat = VALUES(max_lat),
+           min_lon = VALUES(min_lon),
+           max_lon = VALUES(max_lon),
+           fix_count = VALUES(fix_count),
+           uploaded_at = NOW()'
+    );
+    $stmt->execute([
+        $pilotName,
+        $email,
+        $originalName,
+        $relativePath,
+        $hash,
+        $igc['first_fix_at'],
+        $igc['last_fix_at'],
+        $igc['min_lat'],
+        $igc['max_lat'],
+        $igc['min_lon'],
+        $igc['max_lon'],
+        $igc['fix_count'],
+    ]);
+
+    $lookup = $pdo->prepare('SELECT id FROM rankings_scoring_tracklogs WHERE file_hash = ? AND pilot_email = ? LIMIT 1');
+    $lookup->execute([$hash, $email]);
+    $tracklogId = (int)$lookup->fetchColumn();
+    if ($tracklogId <= 0) {
+        throw new RuntimeException('Tracklog is opgeslagen, maar kon niet worden teruggevonden.');
+    }
+    return $tracklogId;
+}
+
+function scoring_manual_minimum_filename(): string {
+    return 'manual-minimum-distance';
+}
+
+function scoring_is_manual_minimum_tracklog(array $tracklog): bool {
+    return (string)($tracklog['original_filename'] ?? '') === scoring_manual_minimum_filename()
+        && trim((string)($tracklog['storage_path'] ?? '')) === '';
+}
+
+function scoring_add_manual_minimum_flight(PDO $pdo, array $task, string $pilotName, ?string $pilotEmail = null): int {
+    $pilotName = trim($pilotName);
+    if ($pilotName === '') {
+        throw new RuntimeException('Vul een pilotnaam in.');
+    }
+    $email = scoring_normalize_email((string)$pilotEmail);
+    if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new RuntimeException('Vul een geldig e-mailadres in of laat het leeg.');
+    }
+
+    $hash = hash('sha256', 'manual-minimum-distance|' . (int)$task['id'] . '|' . $pilotName . '|' . $email . '|' . bin2hex(random_bytes(16)));
+    if ($email === '') {
+        $email = scoring_placeholder_email($pilotName, $hash);
+    }
+
+    $startedTransaction = !$pdo->inTransaction();
+    if ($startedTransaction) {
+        $pdo->beginTransaction();
+    }
+    try {
+        $stmt = $pdo->prepare(
+            'INSERT INTO rankings_scoring_tracklogs
+             (pilot_name, pilot_email, original_filename, storage_path, file_hash,
+              first_fix_at, last_fix_at, min_lat, max_lat, min_lon, max_lon, fix_count)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $pilotName,
+            $email,
+            scoring_manual_minimum_filename(),
+            '',
+            $hash,
+            '2000-01-01 00:00:00',
+            '2000-01-01 00:00:00',
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
+        $tracklogId = (int)$pdo->lastInsertId();
+        if ($tracklogId <= 0) {
+            throw new RuntimeException('Minimumafstand kon niet worden opgeslagen.');
+        }
+
+        $distance = max(0.0, (float)$task['minimum_distance_km']);
+        $evaluation = scoring_manual_minimum_evaluation($task);
+        $insert = $pdo->prepare(
+            'INSERT INTO rankings_scoring_task_flights
+             (task_id, tracklog_id, pilot_name, pilot_email, distance_km, reached_ess, reached_goal, evaluation_json)
+             VALUES (?, ?, ?, ?, ?, 0, 0, ?)'
+        );
+        $insert->execute([
+            (int)$task['id'],
+            $tracklogId,
+            $pilotName,
+            $email,
+            $distance,
+            json_encode($evaluation, JSON_UNESCAPED_UNICODE),
+        ]);
+
+        $flightId = (int)$pdo->lastInsertId();
+        if ($startedTransaction) {
+            $pdo->commit();
+        }
+        return $flightId;
+    } catch (Throwable $e) {
+        if ($startedTransaction && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+}
+
+function scoring_decimal_or_null($value): ?float {
+    $value = trim((string)$value);
+    if ($value === '') {
+        return null;
+    }
+    $value = str_replace(',', '.', $value);
+    return is_numeric($value) ? (float)$value : null;
+}
+
+function scoring_parse_coordinate($value, bool $isLongitude): ?float {
+    $raw = strtoupper(trim((string)$value));
+    if ($raw === '') {
+        return null;
+    }
+    $sign = 1.0;
+    if (strpos($raw, 'S') !== false || strpos($raw, 'W') !== false) {
+        $sign = -1.0;
+    }
+    $raw = str_replace(['N', 'S', 'E', 'W', '+'], '', $raw);
+    $raw = trim($raw);
+    if ($raw !== '' && $raw[0] === '-') {
+        $sign = -1.0;
+        $raw = ltrim($raw, '-');
+    }
+    $raw = str_replace(',', '.', $raw);
+
+    if (preg_match('/^(\d{1,3})[:\s](\d+(?:\.\d+)?)(?:[:\s](\d+(?:\.\d+)?))?$/', $raw, $m)) {
+        $deg = (float)$m[1];
+        $min = (float)$m[2];
+        $sec = isset($m[3]) ? (float)$m[3] : 0.0;
+        return $sign * ($deg + ($min / 60.0) + ($sec / 3600.0));
+    }
+
+    if (is_numeric($raw)) {
+        $num = (float)$raw;
+        $abs = abs($num);
+        $degDigits = $isLongitude ? 3 : 2;
+        if ($abs > ($isLongitude ? 180.0 : 90.0)) {
+            $text = preg_replace('/\D/', '', (string)$raw);
+            if (strlen($text) >= $degDigits + 2) {
+                $deg = (float)substr($text, 0, $degDigits);
+                $minutes = (float)substr($text, $degDigits) / 1000.0;
+                return $sign * ($deg + ($minutes / 60.0));
+            }
+        }
+        return $sign * $abs;
+    }
+
+    if (preg_match('/^(\d{' . ($isLongitude ? '3' : '2') . '})(\d{2}(?:\.\d+)?)$/', $raw, $m)) {
+        return $sign * ((float)$m[1] + ((float)$m[2] / 60.0));
+    }
+
+    return null;
+}
+
+function scoring_parse_elevation($value): ?float {
+    $value = strtolower(trim((string)$value));
+    if ($value === '') {
+        return null;
+    }
+    $value = str_replace(',', '.', $value);
+    if (preg_match('/-?\d+(?:\.\d+)?/', $value, $m)) {
+        return (float)$m[0];
+    }
+    return null;
+}
+
+function scoring_dms_tokens_to_decimal(string $hemisphere, $degrees, $minutes, $seconds): ?float {
+    $hemisphere = strtoupper(trim($hemisphere));
+    if (!in_array($hemisphere, ['N', 'S', 'E', 'W'], true)) {
+        return null;
+    }
+    if (!is_numeric($degrees) || !is_numeric($minutes) || !is_numeric($seconds)) {
+        return null;
+    }
+    $value = abs((float)$degrees) + (abs((float)$minutes) / 60.0) + (abs((float)$seconds) / 3600.0);
+    if ($hemisphere === 'S' || $hemisphere === 'W') {
+        $value *= -1.0;
+    }
+    return $value;
+}
+
+function scoring_utm_to_latlon(int $zone, string $zoneLetter, float $easting, float $northing): ?array {
+    if ($zone < 1 || $zone > 60 || $easting <= 0 || $northing <= 0) {
+        return null;
+    }
+
+    $a = 6378137.0;
+    $eccSquared = 0.00669438;
+    $k0 = 0.9996;
+    $eccPrimeSquared = $eccSquared / (1.0 - $eccSquared);
+    $e1 = (1.0 - sqrt(1.0 - $eccSquared)) / (1.0 + sqrt(1.0 - $eccSquared));
+
+    $x = $easting - 500000.0;
+    $y = $northing;
+    $zoneLetter = strtoupper($zoneLetter);
+    if ($zoneLetter !== '' && $zoneLetter < 'N') {
+        $y -= 10000000.0;
+    }
+
+    $longOrigin = (($zone - 1) * 6) - 180 + 3;
+    $m = $y / $k0;
+    $mu = $m / ($a * (1.0 - ($eccSquared / 4.0) - (3.0 * $eccSquared * $eccSquared / 64.0) - (5.0 * $eccSquared * $eccSquared * $eccSquared / 256.0)));
+
+    $phi1Rad = $mu
+        + ((3.0 * $e1 / 2.0) - (27.0 * $e1 * $e1 * $e1 / 32.0)) * sin(2.0 * $mu)
+        + ((21.0 * $e1 * $e1 / 16.0) - (55.0 * $e1 * $e1 * $e1 * $e1 / 32.0)) * sin(4.0 * $mu)
+        + (151.0 * $e1 * $e1 * $e1 / 96.0) * sin(6.0 * $mu)
+        + (1097.0 * $e1 * $e1 * $e1 * $e1 / 512.0) * sin(8.0 * $mu);
+
+    $sinPhi = sin($phi1Rad);
+    $cosPhi = cos($phi1Rad);
+    $tanPhi = tan($phi1Rad);
+    $n1 = $a / sqrt(1.0 - ($eccSquared * $sinPhi * $sinPhi));
+    $t1 = $tanPhi * $tanPhi;
+    $c1 = $eccPrimeSquared * $cosPhi * $cosPhi;
+    $r1 = $a * (1.0 - $eccSquared) / pow(1.0 - ($eccSquared * $sinPhi * $sinPhi), 1.5);
+    $d = $x / ($n1 * $k0);
+
+    $lat = $phi1Rad - (($n1 * $tanPhi / $r1) * (
+        ($d * $d / 2.0)
+        - ((5.0 + (3.0 * $t1) + (10.0 * $c1) - (4.0 * $c1 * $c1) - (9.0 * $eccPrimeSquared)) * pow($d, 4) / 24.0)
+        + ((61.0 + (90.0 * $t1) + (298.0 * $c1) + (45.0 * $t1 * $t1) - (252.0 * $eccPrimeSquared) - (3.0 * $c1 * $c1)) * pow($d, 6) / 720.0)
+    ));
+
+    $lon = deg2rad($longOrigin) + (
+        $d
+        - ((1.0 + (2.0 * $t1) + $c1) * pow($d, 3) / 6.0)
+        + ((5.0 - (2.0 * $c1) + (28.0 * $t1) - (3.0 * $c1 * $c1) + (8.0 * $eccPrimeSquared) + (24.0 * $t1 * $t1)) * pow($d, 5) / 120.0)
+    ) / max(0.000001, $cosPhi);
+
+    return ['latitude' => rad2deg($lat), 'longitude' => rad2deg($lon)];
+}
+
+function scoring_gpx_child_text($node, string $name): string {
+    $matches = $node->xpath('./*[local-name()="' . $name . '"]');
+    if ($matches && isset($matches[0])) {
+        return trim((string)$matches[0]);
+    }
+    return '';
+}
+
+function scoring_parse_gpx_waypoints_file(string $path): array {
+    $content = @file_get_contents($path);
+    if ($content === false || stripos($content, '<gpx') === false) {
+        return [];
+    }
+
+    $waypoints = [];
+    if (function_exists('simplexml_load_string')) {
+        $previous = libxml_use_internal_errors(true);
+        $xml = simplexml_load_string($content);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+        if ($xml instanceof SimpleXMLElement) {
+            $nodes = $xml->xpath('//*[local-name()="wpt" or local-name()="rtept"]');
+            if ($nodes) {
+                foreach ($nodes as $idx => $node) {
+                    $lat = scoring_decimal_or_null((string)$node['lat']);
+                    $lon = scoring_decimal_or_null((string)$node['lon']);
+                    if ($lat === null || $lon === null || abs($lat) > 90 || abs($lon) > 180) {
+                        continue;
+                    }
+                    $name = scoring_gpx_child_text($node, 'name');
+                    if ($name === '') {
+                        $name = scoring_gpx_child_text($node, 'desc');
+                    }
+                    if ($name === '') {
+                        $name = 'WP ' . ($idx + 1);
+                    }
+                    $waypoints[] = [
+                        'name' => substr($name, 0, 120),
+                        'code' => null,
+                        'latitude' => $lat,
+                        'longitude' => $lon,
+                        'elevation_m' => scoring_parse_elevation(scoring_gpx_child_text($node, 'ele')),
+                    ];
+                }
+            }
+        }
+    }
+
+    if (empty($waypoints)) {
+        preg_match_all('~<(wpt|rtept)\b([^>]*)>(.*?)</\1>~is', $content, $matches, PREG_SET_ORDER);
+        foreach ($matches as $idx => $match) {
+            $attrs = $match[2];
+            $body = $match[3];
+            if (!preg_match('/\blat=["\']([^"\']+)["\']/', $attrs, $latMatch) || !preg_match('/\blon=["\']([^"\']+)["\']/', $attrs, $lonMatch)) {
+                continue;
+            }
+            $lat = scoring_decimal_or_null($latMatch[1]);
+            $lon = scoring_decimal_or_null($lonMatch[1]);
+            if ($lat === null || $lon === null || abs($lat) > 90 || abs($lon) > 180) {
+                continue;
+            }
+            $name = preg_match('~<name>(.*?)</name>~is', $body, $nameMatch) ? html_entity_decode(trim(strip_tags($nameMatch[1])), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : ('WP ' . ($idx + 1));
+            $ele = preg_match('~<ele>(.*?)</ele>~is', $body, $eleMatch) ? $eleMatch[1] : '';
+            $waypoints[] = [
+                'name' => substr($name, 0, 120),
+                'code' => null,
+                'latitude' => $lat,
+                'longitude' => $lon,
+                'elevation_m' => scoring_parse_elevation($ele),
+            ];
+        }
+    }
+
+    return $waypoints;
+}
+
+function scoring_parse_compegps_wpt_line(string $line): ?array {
+    if (!preg_match('/^\s*W\s+/u', $line)) {
+        return null;
+    }
+    $tokens = preg_split('/\s+/', trim($line));
+    if (!$tokens || count($tokens) < 4) {
+        return null;
+    }
+    $name = $tokens[1] ?? 'Waypoint';
+
+    for ($i = 2; $i < count($tokens) - 2; $i++) {
+        if (preg_match('/^(\d{1,2})([C-HJ-NP-X])$/i', $tokens[$i], $m) && is_numeric($tokens[$i + 1]) && is_numeric($tokens[$i + 2])) {
+            $converted = scoring_utm_to_latlon((int)$m[1], $m[2], (float)$tokens[$i + 1], (float)$tokens[$i + 2]);
+            if ($converted) {
+                return [
+                    'name' => substr($name, 0, 120),
+                    'code' => substr($name, 0, 40),
+                    'latitude' => $converted['latitude'],
+                    'longitude' => $converted['longitude'],
+                    'elevation_m' => isset($tokens[$i + 5]) ? scoring_parse_elevation($tokens[$i + 5]) : null,
+                ];
+            }
+        }
+    }
+
+    return null;
+}
+
+function scoring_guess_waypoint_from_parts(array $parts, ?array $headerMap = null): ?array {
+    $name = $parts[0] ?? '';
+    $code = null;
+    $lat = null;
+    $lon = null;
+    $elev = null;
+
+    if (count($parts) >= 9 && preg_match('/^[NS]$/i', (string)$parts[1]) && preg_match('/^[EW]$/i', (string)$parts[5])) {
+        $lat = scoring_dms_tokens_to_decimal((string)$parts[1], $parts[2], $parts[3], $parts[4]);
+        $lon = scoring_dms_tokens_to_decimal((string)$parts[5], $parts[6], $parts[7], $parts[8]);
+        if ($lat !== null && $lon !== null && abs($lat) <= 90 && abs($lon) <= 180) {
+            return [
+                'name' => substr(trim((string)$parts[0]), 0, 120),
+                'code' => substr(trim((string)$parts[0]), 0, 40),
+                'latitude' => $lat,
+                'longitude' => $lon,
+                'elevation_m' => scoring_parse_elevation($parts[9] ?? ''),
+            ];
+        }
+    }
+
+    if ($headerMap) {
+        $nameIdx = $headerMap['name'] ?? ($headerMap['title'] ?? 0);
+        $codeIdx = $headerMap['code'] ?? null;
+        $latIdx = $headerMap['lat'] ?? ($headerMap['latitude'] ?? null);
+        $lonIdx = $headerMap['lon'] ?? ($headerMap['lng'] ?? ($headerMap['longitude'] ?? null));
+        $elevIdx = $headerMap['elev'] ?? ($headerMap['elevation'] ?? ($headerMap['alt'] ?? null));
+        $name = $parts[$nameIdx] ?? $name;
+        $code = $codeIdx !== null ? ($parts[$codeIdx] ?? null) : null;
+        $lat = $latIdx !== null ? scoring_parse_coordinate($parts[$latIdx] ?? '', false) : null;
+        $lon = $lonIdx !== null ? scoring_parse_coordinate($parts[$lonIdx] ?? '', true) : null;
+        $elev = $elevIdx !== null ? scoring_parse_elevation($parts[$elevIdx] ?? '') : null;
+    }
+
+    if (($lat === null || $lon === null) && count($parts) >= 4 && is_numeric($parts[0] ?? null)) {
+        $oziLat = scoring_parse_coordinate($parts[2] ?? '', false);
+        $oziLon = scoring_parse_coordinate($parts[3] ?? '', true);
+        if ($oziLat !== null && $oziLon !== null && abs($oziLat) <= 90 && abs($oziLon) <= 180) {
+            $name = $parts[1] ?? $name;
+            $code = $parts[1] ?? null;
+            $lat = $oziLat;
+            $lon = $oziLon;
+            $oziElev = scoring_parse_elevation($parts[14] ?? '');
+            $elev = ($oziElev !== null && $oziElev > -700) ? $oziElev * 0.3048 : null;
+        }
+    }
+
+    if ($lat === null || $lon === null) {
+        for ($i = 0; $i < count($parts) - 1; $i++) {
+            $maybeLat = scoring_parse_coordinate($parts[$i], false);
+            $maybeLon = scoring_parse_coordinate($parts[$i + 1], true);
+            if ($maybeLat !== null && $maybeLon !== null && abs($maybeLat) <= 90 && abs($maybeLon) <= 180) {
+                $lat = $maybeLat;
+                $lon = $maybeLon;
+                if (strtoupper((string)($parts[0] ?? '')) === 'W' && isset($parts[1])) {
+                    $name = $parts[1];
+                    $code = $parts[1];
+                } elseif (is_numeric($parts[0] ?? null) && isset($parts[1])) {
+                    $name = $parts[1];
+                    $code = $parts[1];
+                } else {
+                    $name = $parts[0] ?? $name;
+                    $code = isset($parts[1]) && $i > 1 ? $parts[1] : $code;
+                }
+                $elev = scoring_parse_elevation($parts[$i + 2] ?? '');
+                break;
+            }
+        }
+    }
+
+    $name = trim((string)$name, " \t\n\r\0\x0B\"");
+    if ($name === '' || $lat === null || $lon === null) {
+        return null;
+    }
+
+    return [
+        'name' => substr($name, 0, 120),
+        'code' => $code !== null && trim((string)$code) !== '' ? substr(trim((string)$code), 0, 40) : null,
+        'latitude' => $lat,
+        'longitude' => $lon,
+        'elevation_m' => $elev,
+    ];
+}
+
+function scoring_upsert_competition_waypoints(PDO $pdo, int $competitionId, array $waypoints, string $source = 'file'): int {
+    $stmt = $pdo->prepare('SELECT id, name, code FROM rankings_scoring_waypoints WHERE competition_id = ?');
+    $stmt->execute([$competitionId]);
+    $byCode = [];
+    $byName = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $id = (int)$row['id'];
+        $code = strtolower(trim((string)($row['code'] ?? '')));
+        $name = strtolower(trim((string)($row['name'] ?? '')));
+        if ($code !== '' && !isset($byCode[$code])) {
+            $byCode[$code] = $id;
+        }
+        if ($name !== '' && !isset($byName[$name])) {
+            $byName[$name] = $id;
+        }
+    }
+
+    $insert = $pdo->prepare(
+        'INSERT INTO rankings_scoring_waypoints
+         (competition_id, name, code, latitude, longitude, elevation_m, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    $update = $pdo->prepare(
+        'UPDATE rankings_scoring_waypoints
+         SET name = ?, code = ?, latitude = ?, longitude = ?, elevation_m = ?, source = ?
+         WHERE id = ? AND competition_id = ?'
+    );
+
+    $changed = 0;
+    foreach ($waypoints as $wp) {
+        $code = strtolower(trim((string)($wp['code'] ?? '')));
+        $name = strtolower(trim((string)($wp['name'] ?? '')));
+        $id = null;
+        if ($code !== '' && isset($byCode[$code])) {
+            $id = $byCode[$code];
+        } elseif ($name !== '' && isset($byName[$name])) {
+            $id = $byName[$name];
+        }
+
+        if ($id !== null) {
+            $update->execute([
+                $wp['name'],
+                $wp['code'],
+                $wp['latitude'],
+                $wp['longitude'],
+                $wp['elevation_m'],
+                $source,
+                $id,
+                $competitionId,
+            ]);
+        } else {
+            $insert->execute([
+                $competitionId,
+                $wp['name'],
+                $wp['code'],
+                $wp['latitude'],
+                $wp['longitude'],
+                $wp['elevation_m'],
+                $source,
+            ]);
+        }
+        $changed++;
+    }
+
+    return $changed;
+}
+
+function scoring_parse_waypoints_file(string $path): array {
+    $gpxWaypoints = scoring_parse_gpx_waypoints_file($path);
+    if (!empty($gpxWaypoints)) {
+        return $gpxWaypoints;
+    }
+
+    $lines = @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (!$lines) {
+        throw new RuntimeException('Waypointsbestand is leeg of onleesbaar.');
+    }
+
+    $waypoints = [];
+    $headerMap = null;
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#' || $line[0] === '*') {
+            continue;
+        }
+
+        if (preg_match('/^\s*w\s/u', $line)) {
+            continue;
+        }
+
+        $compeWaypoint = scoring_parse_compegps_wpt_line($line);
+        if ($compeWaypoint) {
+            $waypoints[] = $compeWaypoint;
+            continue;
+        }
+
+        $delimiter = ',';
+        foreach (["\t", ';', ','] as $candidate) {
+            if (substr_count($line, $candidate) > substr_count($line, $delimiter)) {
+                $delimiter = $candidate;
+            }
+        }
+        if (substr_count($line, $delimiter) === 0 && preg_match('/\s+/', $line)) {
+            $parts = preg_split('/\s+/', trim($line));
+        } else {
+            $parts = array_map('trim', str_getcsv($line, $delimiter));
+        }
+        if (count($parts) < 3) {
+            continue;
+        }
+
+        $lowerParts = array_map(function ($part) { return strtolower(trim($part)); }, $parts);
+        if (in_array('lat', $lowerParts, true) || in_array('latitude', $lowerParts, true)) {
+            $headerMap = [];
+            foreach ($lowerParts as $idx => $header) {
+                $headerMap[$header] = $idx;
+            }
+            continue;
+        }
+
+        $waypoint = scoring_guess_waypoint_from_parts($parts, $headerMap);
+        if ($waypoint) {
+            $waypoints[] = $waypoint;
+        }
+    }
+
+    if (empty($waypoints)) {
+        throw new RuntimeException('Geen bruikbare waypoints gevonden. Ondersteund: GPX, SeeYou CUP/CSV met name-lat-lon, OziExplorer WPT en CompeGPS/FS WPT met WGS84 lat/lon of UTM waypoints.');
+    }
+    return $waypoints;
+}
+
+function scoring_igc_fix_from_b_record(string $line, DateTimeImmutable $date, int &$dayOffset, ?int &$previousSeconds): ?array {
+    if (strlen($line) < 35 || $line[0] !== 'B') {
+        return null;
+    }
+    $hh = (int)substr($line, 1, 2);
+    $mm = (int)substr($line, 3, 2);
+    $ss = (int)substr($line, 5, 2);
+    $seconds = ($hh * 3600) + ($mm * 60) + $ss;
+    if ($previousSeconds !== null && $seconds + 3600 < $previousSeconds) {
+        $dayOffset++;
+    }
+    $previousSeconds = $seconds;
+
+    $latDeg = (int)substr($line, 7, 2);
+    $latMin = (float)substr($line, 9, 5) / 1000.0;
+    $latHem = substr($line, 14, 1);
+    $lonDeg = (int)substr($line, 15, 3);
+    $lonMin = (float)substr($line, 18, 5) / 1000.0;
+    $lonHem = substr($line, 23, 1);
+    $validity = substr($line, 24, 1);
+    if ($validity !== 'A' && $validity !== 'V') {
+        return null;
+    }
+    $alt = trim(substr($line, 30, 5));
+    $lat = $latDeg + ($latMin / 60.0);
+    $lon = $lonDeg + ($lonMin / 60.0);
+    if ($latHem === 'S') {
+        $lat *= -1;
+    }
+    if ($lonHem === 'W') {
+        $lon *= -1;
+    }
+    $time = $date->modify('+' . $dayOffset . ' days')->setTime($hh, $mm, $ss);
+    return [
+        'time_utc' => $time->format('Y-m-d H:i:s'),
+        'lat' => $lat,
+        'lon' => $lon,
+        'altitude_m' => is_numeric($alt) ? (int)$alt : null,
+    ];
+}
+
+function scoring_parse_igc_file(string $path): array {
+    $lines = @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (!$lines) {
+        throw new RuntimeException('IGC-bestand is leeg of onleesbaar.');
+    }
+    $date = null;
+    foreach ($lines as $line) {
+        if (preg_match('/^HFDTE(?:DATE:)?\s*(\d{2})(\d{2})(\d{2})/i', $line, $m)) {
+            $day = (int)$m[1];
+            $month = (int)$m[2];
+            $year = (int)$m[3];
+            $year += $year >= 80 ? 1900 : 2000;
+            $date = new DateTimeImmutable(sprintf('%04d-%02d-%02d 00:00:00', $year, $month, $day), scoring_utc_timezone());
+            break;
+        }
+    }
+    if (!$date) {
+        throw new RuntimeException('IGC-bestand bevat geen HFDTE-datum.');
+    }
+
+    $fixes = [];
+    $dayOffset = 0;
+    $previousSeconds = null;
+    foreach ($lines as $line) {
+        $fix = scoring_igc_fix_from_b_record($line, $date, $dayOffset, $previousSeconds);
+        if ($fix) {
+            $fixes[] = $fix;
+        }
+    }
+    if (empty($fixes)) {
+        throw new RuntimeException('IGC-bestand bevat geen bruikbare B-records.');
+    }
+
+    $lats = array_column($fixes, 'lat');
+    $lons = array_column($fixes, 'lon');
+    return [
+        'fixes' => $fixes,
+        'first_fix_at' => $fixes[0]['time_utc'],
+        'last_fix_at' => $fixes[count($fixes) - 1]['time_utc'],
+        'min_lat' => min($lats),
+        'max_lat' => max($lats),
+        'min_lon' => min($lons),
+        'max_lon' => max($lons),
+        'fix_count' => count($fixes),
+    ];
+}
+
+function scoring_haversine_km(float $lat1, float $lon1, float $lat2, float $lon2): float {
+    $a = 6378.137;
+    $f = 1 / 298.257223563;
+    $b = (1 - $f) * $a;
+    $u1 = atan((1 - $f) * tan(deg2rad($lat1)));
+    $u2 = atan((1 - $f) * tan(deg2rad($lat2)));
+    $l = deg2rad($lon2 - $lon1);
+    $lambda = $l;
+    $lambdaPrevious = 0.0;
+    $sinSigma = 0.0;
+    $cosSigma = 0.0;
+    $sigma = 0.0;
+    $cosSqAlpha = 0.0;
+    $cos2SigmaM = 0.0;
+
+    for ($iter = 0; $iter < 100; $iter++) {
+        $sinLambda = sin($lambda);
+        $cosLambda = cos($lambda);
+        $sinSigma = sqrt(
+            pow(cos($u2) * $sinLambda, 2)
+            + pow(cos($u1) * sin($u2) - sin($u1) * cos($u2) * $cosLambda, 2)
+        );
+        if ($sinSigma == 0.0) {
+            return 0.0;
+        }
+        $cosSigma = sin($u1) * sin($u2) + cos($u1) * cos($u2) * $cosLambda;
+        $sigma = atan2($sinSigma, $cosSigma);
+        $sinAlpha = cos($u1) * cos($u2) * $sinLambda / $sinSigma;
+        $cosSqAlpha = 1 - ($sinAlpha * $sinAlpha);
+        $cos2SigmaM = $cosSqAlpha == 0.0 ? 0.0 : $cosSigma - (2 * sin($u1) * sin($u2) / $cosSqAlpha);
+        $c = $f / 16 * $cosSqAlpha * (4 + $f * (4 - (3 * $cosSqAlpha)));
+        $lambdaPrevious = $lambda;
+        $lambda = $l + (1 - $c) * $f * $sinAlpha * (
+            $sigma + $c * $sinSigma * ($cos2SigmaM + $c * $cosSigma * (-1 + 2 * $cos2SigmaM * $cos2SigmaM))
+        );
+        if (abs($lambda - $lambdaPrevious) <= 1e-12) {
+            break;
+        }
+    }
+
+    if (abs($lambda - $lambdaPrevious) > 1e-9) {
+        $r = 6371.0088;
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLon = deg2rad($lon2 - $lon1);
+        $aa = sin($dLat / 2) * sin($dLat / 2)
+            + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLon / 2) * sin($dLon / 2);
+        return $r * 2 * atan2(sqrt($aa), sqrt(max(0.0, 1.0 - $aa)));
+    }
+
+    $uSq = $cosSqAlpha * (($a * $a) - ($b * $b)) / ($b * $b);
+    $aa = 1 + $uSq / 16384 * (4096 + $uSq * (-768 + $uSq * (320 - 175 * $uSq)));
+    $bb = $uSq / 1024 * (256 + $uSq * (-128 + $uSq * (74 - 47 * $uSq)));
+    $deltaSigma = $bb * $sinSigma * (
+        $cos2SigmaM + $bb / 4 * (
+            $cosSigma * (-1 + 2 * $cos2SigmaM * $cos2SigmaM)
+            - $bb / 6 * $cos2SigmaM * (-3 + 4 * $sinSigma * $sinSigma) * (-3 + 4 * $cos2SigmaM * $cos2SigmaM)
+        )
+    );
+    return $b * $aa * ($sigma - $deltaSigma);
+}
+
+function scoring_center_route_distance_km(array $turnpoints): float {
+    $distance = 0.0;
+    for ($i = 1; $i < count($turnpoints); $i++) {
+        $a = $turnpoints[$i - 1];
+        $b = $turnpoints[$i];
+        $distance += scoring_haversine_km((float)$a['latitude'], (float)$a['longitude'], (float)$b['latitude'], (float)$b['longitude']);
+    }
+    return $distance;
+}
+
+function scoring_optimised_route_metrics(array $turnpoints): array {
+    $count = count($turnpoints);
+    if ($count < 2) {
+        return ['distance' => 0.0, 'cumulative' => array_fill(0, $count, 0.0)];
+    }
+
+    static $cache = [];
+    $cacheKey = md5(json_encode(array_map(function ($tp) {
+        return [
+            round((float)$tp['latitude'], 7),
+            round((float)$tp['longitude'], 7),
+            round(((float)($tp['radius_m'] ?? 0)) / 1000.0, 3),
+        ];
+    }, $turnpoints)));
+    if (isset($cache[$cacheKey])) {
+        return $cache[$cacheKey];
+    }
+
+    $latSum = 0.0;
+    foreach ($turnpoints as $tp) {
+        $latSum += (float)$tp['latitude'];
+    }
+    $lat0 = deg2rad($latSum / $count);
+    $lonRef = (float)$turnpoints[0]['longitude'];
+    $latRef = (float)$turnpoints[0]['latitude'];
+    $a = 6378.137;
+    $f = 1 / 298.257223563;
+    $e2 = $f * (2 - $f);
+    $sinLat = sin($lat0);
+    $m = $a * (1 - $e2) / pow(1 - ($e2 * $sinLat * $sinLat), 1.5);
+    $n = $a / sqrt(1 - ($e2 * $sinLat * $sinLat));
+    $xScale = $n * cos($lat0) * (pi() / 180.0);
+    $yScale = $m * (pi() / 180.0);
+
+    $points = [];
+    foreach ($turnpoints as $tp) {
+        $points[] = [
+            'x' => ((float)$tp['longitude'] - $lonRef) * $xScale,
+            'y' => ((float)$tp['latitude'] - $latRef) * $yScale,
+            'r' => max(0.0, ((float)($tp['radius_m'] ?? 0)) / 1000.0),
+        ];
+    }
+
+    $pathDistance = function (array $angles) use ($points, $count): float {
+        $path = [];
+        for ($i = 0; $i < $count; $i++) {
+            if ($i === 0 || $points[$i]['r'] <= 0.0) {
+                $path[$i] = ['x' => $points[$i]['x'], 'y' => $points[$i]['y']];
+            } else {
+                $path[$i] = [
+                    'x' => $points[$i]['x'] + ($points[$i]['r'] * cos($angles[$i])),
+                    'y' => $points[$i]['y'] + ($points[$i]['r'] * sin($angles[$i])),
+                ];
+            }
+        }
+        $distance = 0.0;
+        for ($i = 1; $i < $count; $i++) {
+            $distance += hypot($path[$i]['x'] - $path[$i - 1]['x'], $path[$i]['y'] - $path[$i - 1]['y']);
+        }
+        return $distance;
+    };
+
+    $seeds = [];
+    foreach (['previous', 'next', 'bisector', 'zero', 'quarter'] as $mode) {
+        $angles = array_fill(0, $count, 0.0);
+        for ($i = 1; $i < $count; $i++) {
+            $prev = $points[max(0, $i - 1)];
+            $next = $points[min($count - 1, $i + 1)];
+            if ($mode === 'previous') {
+                $angles[$i] = atan2($prev['y'] - $points[$i]['y'], $prev['x'] - $points[$i]['x']);
+            } elseif ($mode === 'next') {
+                $angles[$i] = atan2($next['y'] - $points[$i]['y'], $next['x'] - $points[$i]['x']);
+            } elseif ($mode === 'bisector') {
+                $v1x = $prev['x'] - $points[$i]['x'];
+                $v1y = $prev['y'] - $points[$i]['y'];
+                $v2x = $next['x'] - $points[$i]['x'];
+                $v2y = $next['y'] - $points[$i]['y'];
+                $l1 = max(0.000001, hypot($v1x, $v1y));
+                $l2 = max(0.000001, hypot($v2x, $v2y));
+                $angles[$i] = atan2(($v1y / $l1) + ($v2y / $l2), ($v1x / $l1) + ($v2x / $l2));
+            } elseif ($mode === 'quarter') {
+                $angles[$i] = pi() / 2.0;
+            }
+        }
+        $seeds[] = $angles;
+    }
+
+    $bestAngles = $seeds[0];
+    $bestDistance = PHP_FLOAT_MAX;
+    foreach ($seeds as $angles) {
+        $step = 1.0;
+        for ($iter = 0; $iter < 2000; $iter++) {
+            $improved = false;
+            for ($i = 1; $i < $count; $i++) {
+                if ($points[$i]['r'] <= 0.0) {
+                    continue;
+                }
+                $baseAngle = $angles[$i];
+                $baseDistance = $pathDistance($angles);
+                $chosenAngle = $baseAngle;
+                $chosenDistance = $baseDistance;
+                foreach ([-$step, $step] as $delta) {
+                    $angles[$i] = $baseAngle + $delta;
+                    $distance = $pathDistance($angles);
+                    if ($distance < $chosenDistance) {
+                        $chosenDistance = $distance;
+                        $chosenAngle = $angles[$i];
+                        $improved = true;
+                    }
+                }
+                $angles[$i] = $chosenAngle;
+            }
+            if (!$improved) {
+                $step *= 0.55;
+            }
+            if ($step < 1e-8) {
+                break;
+            }
+        }
+        $distance = $pathDistance($angles);
+        if ($distance < $bestDistance) {
+            $bestDistance = $distance;
+            $bestAngles = $angles;
+        }
+    }
+
+    $path = [];
+    for ($i = 0; $i < $count; $i++) {
+        if ($i === 0 || $points[$i]['r'] <= 0.0) {
+            $path[$i] = ['x' => $points[$i]['x'], 'y' => $points[$i]['y']];
+        } else {
+            $path[$i] = [
+                'x' => $points[$i]['x'] + ($points[$i]['r'] * cos($bestAngles[$i])),
+                'y' => $points[$i]['y'] + ($points[$i]['r'] * sin($bestAngles[$i])),
+            ];
+        }
+    }
+    $cumulative = [0.0];
+    for ($i = 1; $i < $count; $i++) {
+        $cumulative[$i] = $cumulative[$i - 1] + hypot($path[$i]['x'] - $path[$i - 1]['x'], $path[$i]['y'] - $path[$i - 1]['y']);
+    }
+
+    $cache[$cacheKey] = [
+        'distance' => $cumulative[$count - 1],
+        'cumulative' => $cumulative,
+    ];
+    return $cache[$cacheKey];
+}
+
+function scoring_task_distance_km(array $turnpoints): float {
+    return scoring_optimised_route_metrics($turnpoints)['distance'];
+}
+
+function scoring_speed_section_center_distance_km(array $turnpoints): float {
+    if (count($turnpoints) < 2) {
+        return 0.0;
+    }
+    list($sssIndex, $essIndex) = scoring_speed_section_indices($turnpoints);
+    $distance = 0.0;
+    for ($i = $sssIndex + 1; $i <= $essIndex; $i++) {
+        $a = $turnpoints[$i - 1];
+        $b = $turnpoints[$i];
+        $distance += scoring_haversine_km((float)$a['latitude'], (float)$a['longitude'], (float)$b['latitude'], (float)$b['longitude']);
+    }
+    return $distance;
+}
+
+function scoring_speed_section_boundary_distance_km(array $turnpoints): float {
+    if (count($turnpoints) < 2) {
+        return 0.0;
+    }
+    list($sssIndex, $essIndex) = scoring_speed_section_indices($turnpoints);
+    $cumulative = scoring_route_cumulative($turnpoints);
+    return max(0.0, (float)($cumulative[$essIndex] ?? 0.0) - (float)($cumulative[$sssIndex] ?? 0.0));
+}
+
+function scoring_route_cumulative(array $route): array {
+    return scoring_optimised_route_metrics($route)['cumulative'];
+}
+
+function scoring_project_progress_km(float $lat, float $lon, array $route, array $cumulative): float {
+    if (count($route) < 2) {
+        return 0.0;
+    }
+    $earth = 6371.0088;
+    $bestDistance = PHP_FLOAT_MAX;
+    $bestProgress = 0.0;
+    for ($i = 1; $i < count($route); $i++) {
+        $a = $route[$i - 1];
+        $b = $route[$i];
+        $lat0 = deg2rad(((float)$a['latitude'] + (float)$b['latitude']) / 2.0);
+        $ax = deg2rad((float)$a['longitude']) * $earth * cos($lat0);
+        $ay = deg2rad((float)$a['latitude']) * $earth;
+        $bx = deg2rad((float)$b['longitude']) * $earth * cos($lat0);
+        $by = deg2rad((float)$b['latitude']) * $earth;
+        $px = deg2rad($lon) * $earth * cos($lat0);
+        $py = deg2rad($lat) * $earth;
+        $vx = $bx - $ax;
+        $vy = $by - $ay;
+        $wx = $px - $ax;
+        $wy = $py - $ay;
+        $len2 = max(0.000001, ($vx * $vx) + ($vy * $vy));
+        $t = max(0.0, min(1.0, (($wx * $vx) + ($wy * $vy)) / $len2));
+        $projX = $ax + ($t * $vx);
+        $projY = $ay + ($t * $vy);
+        $dist = sqrt((($px - $projX) * ($px - $projX)) + (($py - $projY) * ($py - $projY)));
+        if ($dist < $bestDistance) {
+            $bestDistance = $dist;
+            $bestProgress = $cumulative[$i - 1] + ($t * max(0.0, $cumulative[$i] - $cumulative[$i - 1]));
+        }
+    }
+    return $bestProgress;
+}
+
+function scoring_task_bbox(array $turnpoints, float $marginDeg = 0.8): array {
+    $lats = array_map('floatval', array_column($turnpoints, 'latitude'));
+    $lons = array_map('floatval', array_column($turnpoints, 'longitude'));
+    return [
+        'min_lat' => min($lats) - $marginDeg,
+        'max_lat' => max($lats) + $marginDeg,
+        'min_lon' => min($lons) - $marginDeg,
+        'max_lon' => max($lons) + $marginDeg,
+    ];
+}
+
+function scoring_refresh_tracklog_metadata(PDO $pdo, array $tracklog): bool {
+    if (empty($tracklog['storage_path'])) {
+        return false;
+    }
+    $path = scoring_public_upload_path((string)$tracklog['storage_path']);
+    if (!is_file($path)) {
+        return false;
+    }
+    try {
+        $igc = scoring_parse_igc_file($path);
+        $stmt = $pdo->prepare(
+            'UPDATE rankings_scoring_tracklogs
+             SET first_fix_at = ?, last_fix_at = ?, min_lat = ?, max_lat = ?, min_lon = ?, max_lon = ?, fix_count = ?
+             WHERE id = ?'
+        );
+        $stmt->execute([
+            $igc['first_fix_at'],
+            $igc['last_fix_at'],
+            $igc['min_lat'],
+            $igc['max_lat'],
+            $igc['min_lon'],
+            $igc['max_lon'],
+            $igc['fix_count'],
+            (int)$tracklog['id'],
+        ]);
+        return true;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+function scoring_format_duration(?int $seconds): string {
+    if ($seconds === null) {
+        return '-';
+    }
+    $seconds = max(0, $seconds);
+    $h = intdiv($seconds, 3600);
+    $m = intdiv($seconds % 3600, 60);
+    $s = $seconds % 60;
+    return sprintf('%d:%02d:%02d', $h, $m, $s);
+}
+
+function scoring_load_competition(PDO $pdo, int $id): ?array {
+    $stmt = $pdo->prepare('SELECT c.*, s.email AS scorer_email, s.name AS scorer_name FROM rankings_scoring_competitions c JOIN rankings_scorers s ON s.id = c.scorer_id WHERE c.id = ? LIMIT 1');
+    $stmt->execute([$id]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ?: null;
+}
+
+function scoring_load_task(PDO $pdo, int $taskId): ?array {
+    $stmt = $pdo->prepare('SELECT t.*, c.name AS competition_name, c.scorer_id, c.class, c.scope, c.is_public AS competition_public FROM rankings_scoring_tasks t JOIN rankings_scoring_competitions c ON c.id = t.competition_id WHERE t.id = ? LIMIT 1');
+    $stmt->execute([$taskId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ?: null;
+}
+
+function scoring_competition_buddies_available(PDO $pdo): bool {
+    static $available = null;
+    if ($available !== null) {
+        return $available;
+    }
+    try {
+        $pdo->query('SELECT 1 FROM rankings_scoring_competition_scorers LIMIT 1');
+        $available = true;
+    } catch (Throwable $e) {
+        $available = false;
+    }
+    return $available;
+}
+
+function scoring_can_edit_competition(PDO $pdo, int $competitionId, int $scorerId): bool {
+    if ($competitionId <= 0 || $scorerId <= 0) {
+        return false;
+    }
+    $stmt = $pdo->prepare('SELECT scorer_id FROM rankings_scoring_competitions WHERE id = ? LIMIT 1');
+    $stmt->execute([$competitionId]);
+    $ownerId = (int)$stmt->fetchColumn();
+    if ($ownerId <= 0) {
+        return false;
+    }
+    if ($ownerId === $scorerId) {
+        return true;
+    }
+    if (!scoring_competition_buddies_available($pdo)) {
+        return false;
+    }
+    $stmt = $pdo->prepare('SELECT COUNT(*) FROM rankings_scoring_competition_scorers WHERE competition_id = ? AND scorer_id = ?');
+    $stmt->execute([$competitionId, $scorerId]);
+    return (int)$stmt->fetchColumn() > 0;
+}
+
+function scoring_load_editable_competitions(PDO $pdo, int $scorerId): array {
+    if (scoring_competition_buddies_available($pdo)) {
+        $stmt = $pdo->prepare(
+            "SELECT c.*,
+                    CASE WHEN c.scorer_id = ? THEN 'owner' ELSE COALESCE(cs.role, 'buddy') END AS editor_role,
+                    (SELECT COUNT(*) FROM rankings_scoring_tasks t WHERE t.competition_id = c.id) AS task_count
+             FROM rankings_scoring_competitions c
+             LEFT JOIN rankings_scoring_competition_scorers cs
+               ON cs.competition_id = c.id AND cs.scorer_id = ?
+             WHERE c.scorer_id = ? OR cs.scorer_id IS NOT NULL
+             ORDER BY c.created_at DESC"
+        );
+        $stmt->execute([$scorerId, $scorerId, $scorerId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $stmt = $pdo->prepare(
+        "SELECT c.*, 'owner' AS editor_role,
+                (SELECT COUNT(*) FROM rankings_scoring_tasks t WHERE t.competition_id = c.id) AS task_count
+         FROM rankings_scoring_competitions c
+         WHERE c.scorer_id = ?
+         ORDER BY c.created_at DESC"
+    );
+    $stmt->execute([$scorerId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function scoring_load_competition_editors(PDO $pdo, array $competition): array {
+    $ownerId = (int)$competition['scorer_id'];
+    $stmt = $pdo->prepare('SELECT id, email, name, active FROM rankings_scorers WHERE id = ? LIMIT 1');
+    $stmt->execute([$ownerId]);
+    $owner = $stmt->fetch(PDO::FETCH_ASSOC);
+    $editors = [];
+    if ($owner) {
+        $owner['role'] = 'owner';
+        $editors[] = $owner;
+    }
+
+    if (!scoring_competition_buddies_available($pdo)) {
+        return $editors;
+    }
+
+    $stmt = $pdo->prepare(
+        "SELECT s.id, s.email, s.name, s.active, cs.role
+         FROM rankings_scoring_competition_scorers cs
+         JOIN rankings_scorers s ON s.id = cs.scorer_id
+         WHERE cs.competition_id = ? AND cs.scorer_id <> ?
+         ORDER BY s.email ASC"
+    );
+    $stmt->execute([(int)$competition['id'], $ownerId]);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $editors[] = $row;
+    }
+    return $editors;
+}
+
+function scoring_find_or_create_scorer(PDO $pdo, string $email, ?string $name = null): array {
+    $email = scoring_normalize_email($email);
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new RuntimeException('Vul een geldig e-mailadres in.');
+    }
+    $name = trim((string)$name);
+
+    $stmt = $pdo->prepare('SELECT id, email, name, active FROM rankings_scorers WHERE email = ? LIMIT 1');
+    $stmt->execute([$email]);
+    $scorer = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($scorer) {
+        if ((int)$scorer['active'] !== 1) {
+            throw new RuntimeException('Deze scorer bestaat, maar is inactief.');
+        }
+        if ($name !== '' && trim((string)$scorer['name']) === '') {
+            $pdo->prepare('UPDATE rankings_scorers SET name = ? WHERE id = ?')->execute([$name, (int)$scorer['id']]);
+            $scorer['name'] = $name;
+        }
+        return ['scorer' => $scorer, 'created' => false];
+    }
+
+    $stmt = $pdo->prepare('INSERT INTO rankings_scorers (email, name, active) VALUES (?, ?, 1)');
+    $stmt->execute([$email, $name !== '' ? $name : null]);
+    return [
+        'scorer' => [
+            'id' => (int)$pdo->lastInsertId(),
+            'email' => $email,
+            'name' => $name !== '' ? $name : null,
+            'active' => 1,
+        ],
+        'created' => true,
+    ];
+}
+
+function scoring_add_competition_buddy(PDO $pdo, array $competition, array $inviter, string $email, ?string $name = null): array {
+    if (!scoring_competition_buddies_available($pdo)) {
+        throw new RuntimeException('De tabel rankings_scoring_competition_scorers ontbreekt nog. Voer database/scoring_schema.sql opnieuw uit.');
+    }
+
+    $result = scoring_find_or_create_scorer($pdo, $email, $name);
+    $buddy = $result['scorer'];
+    if ((int)$buddy['id'] === (int)$competition['scorer_id']) {
+        throw new RuntimeException('Deze scorer is al eigenaar van de competitie.');
+    }
+    if ((int)$buddy['id'] === (int)$inviter['id']) {
+        throw new RuntimeException('Je bent al scorer voor deze competitie.');
+    }
+
+    $stmt = $pdo->prepare(
+        "INSERT INTO rankings_scoring_competition_scorers (competition_id, scorer_id, role, invited_by_scorer_id)
+         VALUES (?, ?, 'buddy', ?)
+         ON DUPLICATE KEY UPDATE role = VALUES(role), invited_by_scorer_id = VALUES(invited_by_scorer_id)"
+    );
+    $stmt->execute([(int)$competition['id'], (int)$buddy['id'], (int)$inviter['id']]);
+
+    $sent = scoring_send_competition_buddy_email(
+        (string)$buddy['email'],
+        (string)$competition['name'],
+        $buddy['name'] ?? null,
+        $inviter['name'] ?: $inviter['email']
+    );
+
+    return ['scorer' => $buddy, 'email_sent' => $sent, 'created' => (bool)$result['created']];
+}
+
+function scoring_remove_competition_buddy(PDO $pdo, int $competitionId, int $scorerId): void {
+    if (!scoring_competition_buddies_available($pdo)) {
+        throw new RuntimeException('De buddy scorer tabel ontbreekt.');
+    }
+    $stmt = $pdo->prepare('DELETE FROM rankings_scoring_competition_scorers WHERE competition_id = ? AND scorer_id = ?');
+    $stmt->execute([$competitionId, $scorerId]);
+}
+
+function scoring_load_task_turnpoints(PDO $pdo, int $taskId): array {
+    $stmt = $pdo->prepare(
+        'SELECT tt.*, w.name, w.code, w.latitude, w.longitude, w.elevation_m
+         FROM rankings_scoring_task_turnpoints tt
+         JOIN rankings_scoring_waypoints w ON w.id = tt.waypoint_id
+         WHERE tt.task_id = ?
+         ORDER BY tt.sequence_no ASC'
+    );
+    $stmt->execute([$taskId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function scoring_load_task_gates(PDO $pdo, int $taskId): array {
+    $stmt = $pdo->prepare('SELECT * FROM rankings_scoring_task_start_gates WHERE task_id = ? ORDER BY gate_time_at ASC');
+    $stmt->execute([$taskId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function scoring_speed_section_indices(array $turnpoints): array {
+    $sss = 0;
+    $ess = max(0, count($turnpoints) - 1);
+    foreach ($turnpoints as $idx => $tp) {
+        if (!empty($tp['is_speed_section_start'])) {
+            $sss = $idx;
+        }
+        if (!empty($tp['is_speed_section_end'])) {
+            $ess = $idx;
+        }
+    }
+    if ($ess < $sss) {
+        $ess = $sss;
+    }
+    return [$sss, $ess];
+}
+
+function scoring_match_task_tracklogs(PDO $pdo, array $task, array $turnpoints): int {
+    if (empty($turnpoints)) {
+        return 0;
+    }
+    $bbox = scoring_task_bbox($turnpoints);
+
+    $findMatches = function () use ($pdo, $task, $bbox): array {
+        $stmt = $pdo->prepare(
+            'SELECT id, pilot_name, pilot_email
+             FROM rankings_scoring_tracklogs
+             WHERE first_fix_at <= ?
+               AND last_fix_at >= ?
+               AND max_lat >= ?
+               AND min_lat <= ?
+               AND max_lon >= ?
+               AND min_lon <= ?
+               AND fix_count > 0
+               AND storage_path <> ?'
+        );
+        $stmt->execute([
+            $task['window_close_at'],
+            $task['window_open_at'],
+            $bbox['min_lat'],
+            $bbox['max_lat'],
+            $bbox['min_lon'],
+            $bbox['max_lon'],
+            '',
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    };
+
+    $tracklogs = $findMatches();
+    if (empty($tracklogs)) {
+        $stmt = $pdo->prepare(
+            'SELECT id, storage_path
+             FROM rankings_scoring_tracklogs
+             WHERE max_lat >= ?
+               AND min_lat <= ?
+               AND max_lon >= ?
+               AND min_lon <= ?
+               AND fix_count > 0
+               AND storage_path <> ?'
+        );
+        $stmt->execute([$bbox['min_lat'], $bbox['max_lat'], $bbox['min_lon'], $bbox['max_lon'], '']);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $candidate) {
+            scoring_refresh_tracklog_metadata($pdo, $candidate);
+        }
+        $tracklogs = $findMatches();
+    }
+
+    if (empty($tracklogs)) {
+        return 0;
+    }
+
+    $insert = $pdo->prepare(
+        'INSERT INTO rankings_scoring_task_flights (task_id, tracklog_id, pilot_name, pilot_email)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE pilot_name = VALUES(pilot_name), pilot_email = VALUES(pilot_email)'
+    );
+    foreach ($tracklogs as $tracklog) {
+        $insert->execute([(int)$task['id'], (int)$tracklog['id'], $tracklog['pilot_name'], $tracklog['pilot_email']]);
+    }
+    return count($tracklogs);
+}
+
+function scoring_interpolated_cylinder_hit(array $fixes, array $turnpoint, int $cursorTs): ?array {
+    $radiusM = (float)$turnpoint['radius_m'];
+    $previous = null;
+    foreach ($fixes as $fix) {
+        if ($fix['ts'] < $cursorTs) {
+            continue;
+        }
+        $distanceM = scoring_haversine_km(
+            (float)$fix['lat'],
+            (float)$fix['lon'],
+            (float)$turnpoint['latitude'],
+            (float)$turnpoint['longitude']
+        ) * 1000.0;
+        if ($distanceM <= $radiusM) {
+            if ($previous !== null && $previous['distance_m'] > $radiusM && $fix['ts'] > $previous['fix']['ts']) {
+                $denominator = max(0.001, $previous['distance_m'] - $distanceM);
+                $fraction = max(0.0, min(1.0, ($previous['distance_m'] - $radiusM) / $denominator));
+                $hit = $fix;
+                $hit['ts'] = (int)round($previous['fix']['ts'] + (($fix['ts'] - $previous['fix']['ts']) * $fraction));
+                $hit['time_utc'] = gmdate('Y-m-d H:i:s', $hit['ts']);
+                $hit['lat'] = (float)$previous['fix']['lat'] + (((float)$fix['lat'] - (float)$previous['fix']['lat']) * $fraction);
+                $hit['lon'] = (float)$previous['fix']['lon'] + (((float)$fix['lon'] - (float)$previous['fix']['lon']) * $fraction);
+                return $hit;
+            }
+            return $fix;
+        }
+        $previous = ['fix' => $fix, 'distance_m' => $distanceM];
+    }
+    return null;
+}
+
+function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, array $fixes): array {
+    $windowOpen = strtotime($task['window_open_at'] . ' UTC');
+    $windowClose = strtotime($task['window_close_at'] . ' UTC');
+    $taskDistance = scoring_task_distance_km($turnpoints);
+    $taskDistance = max($taskDistance, (float)$task['minimum_distance_km']);
+    $route = array_values($turnpoints);
+    $cumulative = scoring_route_cumulative($route);
+    list($sssIndex, $essIndex) = scoring_speed_section_indices($turnpoints);
+    $sssProgress = $cumulative[$sssIndex] ?? 0.0;
+    $essProgress = $cumulative[$essIndex] ?? $taskDistance;
+    $speedDistance = max(0.1, $essProgress - $sssProgress);
+
+    $filtered = [];
+    foreach ($fixes as $fix) {
+        $ts = strtotime($fix['time_utc'] . ' UTC');
+        if ($ts >= $windowOpen && $ts <= $windowClose) {
+            $fix['ts'] = $ts;
+            $filtered[] = $fix;
+        }
+    }
+    if (empty($filtered)) {
+        return [
+            'distance_km' => (float)$task['minimum_distance_km'],
+            'reached_ess' => false,
+            'reached_goal' => false,
+            'start_time_at' => null,
+            'ess_time_at' => null,
+            'goal_time_at' => null,
+            'time_seconds' => null,
+            'leading_coefficient' => null,
+            'turnpoints_reached' => 0,
+            'notes' => ['Geen fixes in taakvenster.'],
+        ];
+    }
+
+    $reached = [];
+    $lastReachedIndex = -1;
+    $cursorTs = $windowOpen;
+    foreach ($turnpoints as $idx => $tp) {
+        $hit = scoring_interpolated_cylinder_hit($filtered, $tp, $cursorTs);
+        if ($hit === null) {
+            break;
+        }
+        $reached[$idx] = $hit;
+        $lastReachedIndex = $idx;
+        $cursorTs = $hit['ts'];
+    }
+
+    $reachedGoal = $lastReachedIndex === count($turnpoints) - 1;
+    $nextTurnpointIndex = $reachedGoal ? null : max(0, $lastReachedIndex + 1);
+    $closestDistanceToNext = null;
+    if ($reachedGoal) {
+        $distance = $taskDistance;
+    } else {
+        $completedDistance = $lastReachedIndex >= 0 ? (float)($cumulative[$lastReachedIndex] ?? 0.0) : 0.0;
+        $distance = $completedDistance;
+        if ($nextTurnpointIndex !== null && isset($turnpoints[$nextTurnpointIndex])) {
+            $nextTurnpoint = $turnpoints[$nextTurnpointIndex];
+            $closestDistanceToNext = PHP_FLOAT_MAX;
+            $searchAfterTs = $lastReachedIndex >= 0 && isset($reached[$lastReachedIndex])
+                ? (int)$reached[$lastReachedIndex]['ts']
+                : $windowOpen;
+            foreach ($filtered as $fix) {
+                if ($fix['ts'] < $searchAfterTs) {
+                    continue;
+                }
+                $remaining = scoring_haversine_km(
+                    (float)$fix['lat'],
+                    (float)$fix['lon'],
+                    (float)$nextTurnpoint['latitude'],
+                    (float)$nextTurnpoint['longitude']
+                );
+                $remaining = max(0.0, $remaining - (((float)$nextTurnpoint['radius_m']) / 1000.0));
+                if ($remaining < $closestDistanceToNext) {
+                    $closestDistanceToNext = $remaining;
+                }
+            }
+            if ($closestDistanceToNext !== PHP_FLOAT_MAX) {
+                $distanceToNext = (float)($cumulative[$nextTurnpointIndex] ?? $completedDistance);
+                $distance = max($completedDistance, min($distanceToNext, $distanceToNext - $closestDistanceToNext));
+            } else {
+                $closestDistanceToNext = null;
+            }
+        }
+    }
+    $distance = max((float)$task['minimum_distance_km'], min($taskDistance, $distance));
+    $reachedEss = isset($reached[$essIndex]);
+
+    $startTs = null;
+    if (isset($reached[$sssIndex])) {
+        $crossTs = $reached[$sssIndex]['ts'];
+        if (($task['task_type'] ?? 'race') === 'race' && !empty($gates)) {
+            $gateTimes = array_map(function ($gate) { return strtotime($gate['gate_time_at'] . ' UTC'); }, $gates);
+            sort($gateTimes);
+            $startTs = $gateTimes[0] ?? $crossTs;
+            foreach ($gateTimes as $gateTs) {
+                if ($gateTs <= $crossTs) {
+                    $startTs = $gateTs;
+                }
+            }
+        } else {
+            $startTs = $crossTs;
+        }
+    }
+    $essTs = $reachedEss ? $reached[$essIndex]['ts'] : null;
+    $goalTs = $reachedGoal ? $reached[count($turnpoints) - 1]['ts'] : null;
+    $timeSeconds = ($startTs !== null && $essTs !== null && $essTs >= $startTs) ? ($essTs - $startTs) : null;
+
+    $leadingCoefficient = null;
+    if ($startTs !== null) {
+        $lastTs = $startTs;
+        $minToEss = $speedDistance;
+        $area = 0.0;
+        foreach ($filtered as $fix) {
+            if ($fix['ts'] < $startTs) {
+                continue;
+            }
+            if ($essTs !== null && $fix['ts'] > $essTs) {
+                break;
+            }
+            $progress = min($distance, scoring_project_progress_km((float)$fix['lat'], (float)$fix['lon'], $route, $cumulative));
+            $progressInSpeed = max(0.0, min($speedDistance, $progress - $sssProgress));
+            $minToEss = min($minToEss, $speedDistance - $progressInSpeed);
+            $dt = max(0, $fix['ts'] - $lastTs);
+            $area += $minToEss * $dt;
+            $lastTs = $fix['ts'];
+        }
+        $leadingCoefficient = $area / (3600.0 * max(0.1, $speedDistance));
+    }
+
+    $tsToSql = function ($ts) {
+        return $ts ? gmdate('Y-m-d H:i:s', $ts) : null;
+    };
+
+    return [
+        'distance_km' => round($distance, 3),
+        'reached_ess' => $reachedEss,
+        'reached_goal' => $reachedGoal,
+        'start_time_at' => $tsToSql($startTs),
+        'ess_time_at' => $tsToSql($essTs),
+        'goal_time_at' => $tsToSql($goalTs),
+        'time_seconds' => $timeSeconds,
+        'leading_coefficient' => $leadingCoefficient,
+        'turnpoints_reached' => count($reached),
+        'last_reached_turnpoint_index' => $lastReachedIndex,
+        'next_turnpoint_index' => $nextTurnpointIndex,
+        'closest_distance_to_next_km' => $closestDistanceToNext !== null ? round($closestDistanceToNext, 3) : null,
+        'notes' => [],
+    ];
+}
+
+function scoring_manual_minimum_evaluation(array $task): array {
+    return [
+        'distance_km' => round(max(0.0, (float)$task['minimum_distance_km']), 3),
+        'reached_ess' => false,
+        'reached_goal' => false,
+        'start_time_at' => null,
+        'ess_time_at' => null,
+        'goal_time_at' => null,
+        'time_seconds' => null,
+        'leading_coefficient' => null,
+        'turnpoints_reached' => 0,
+        'last_reached_turnpoint_index' => -1,
+        'next_turnpoint_index' => 0,
+        'closest_distance_to_next_km' => null,
+        'manual_minimum_distance' => true,
+        'notes' => ['Handmatig minimumafstand zonder tracklog.'],
+    ];
+}
+
+function scoring_enabled_components(array $task): array {
+    return [
+        'distance' => !empty($task['use_distance_points']),
+        'time' => !empty($task['use_time_points']),
+        'departure' => !empty($task['use_departure_points']),
+        'leading' => !empty($task['use_leading_points']),
+        'arrival_position' => !empty($task['use_arrival_position_points']),
+        'arrival_time' => !empty($task['use_arrival_time_points']),
+    ];
+}
+
+function scoring_gap_distance_difficulty(array $included, float $minDistance, float $bestDistance): array {
+    if ($bestDistance <= 0.0) {
+        return ['enabled' => false, 'scores' => []];
+    }
+
+    $maxSlot = max(0, (int)floor($bestDistance * 10.0));
+    $minSlot = max(0, (int)floor($minDistance * 10.0));
+    $landed = array_fill(0, $maxSlot + 2, 0);
+    $landedOutCount = 0;
+
+    foreach ($included as $entry) {
+        $ev = $entry['evaluation'];
+        if (!empty($ev['reached_goal'])) {
+            continue;
+        }
+        $landedOutCount++;
+        $slot = (int)floor(((float)$ev['distance_km']) * 10.0);
+        $slot = max($minSlot, min($maxSlot, $slot));
+        $landed[$slot]++;
+    }
+
+    if ($landedOutCount <= 0) {
+        return ['enabled' => false, 'scores' => []];
+    }
+
+    $lookAhead = max(30, (int)round(30.0 * $bestDistance / $landedOutCount));
+    $difficulty = array_fill(0, $maxSlot + 2, 0.0);
+    $sumDifficulty = 0.0;
+    for ($i = 0; $i <= $maxSlot; $i++) {
+        $to = min($maxSlot, $i + $lookAhead);
+        for ($j = $i; $j <= $to; $j++) {
+            $difficulty[$i] += $landed[$j] ?? 0;
+        }
+        $sumDifficulty += $difficulty[$i];
+    }
+
+    if ($sumDifficulty <= 0.0) {
+        return ['enabled' => false, 'scores' => []];
+    }
+
+    $scores = array_fill(0, $maxSlot + 2, 0.0);
+    $cumulative = 0.0;
+    for ($i = 0; $i <= $maxSlot; $i++) {
+        $cumulative += $difficulty[$i] / (2.0 * $sumDifficulty);
+        $scores[$i] = $cumulative;
+    }
+    $scores[$maxSlot + 1] = $scores[$maxSlot];
+
+    return ['enabled' => true, 'scores' => $scores];
+}
+
+function scoring_gap_difficulty_fraction(float $distance, array $difficulty): float {
+    if (empty($difficulty['enabled']) || empty($difficulty['scores'])) {
+        return 0.0;
+    }
+    $slotFloat = max(0.0, $distance * 10.0);
+    $slot = (int)floor($slotFloat);
+    $fraction = $slotFloat - $slot;
+    $scores = $difficulty['scores'];
+    $fallback = (float)end($scores);
+    $base = (float)($scores[$slot] ?? $fallback);
+    $next = (float)($scores[$slot + 1] ?? $base);
+    return $base + (($next - $base) * $fraction);
+}
+
+function scoring_allocate_gap2025_points(array $task, array $evaluations, float $taskDistance): array {
+    $included = array_values($evaluations);
+    $count = count($included);
+    $minDistance = (float)$task['minimum_distance_km'];
+    $nominalDistance = max($minDistance + 0.1, (float)$task['nominal_distance_km']);
+    $nominalTimeHours = max(0.1, ((int)$task['nominal_time_minutes']) / 60.0);
+    $bestDistance = 0.0;
+    $sumOverMinimum = 0.0;
+    $goalCount = 0;
+    $bestTimeHours = null;
+    $bestLeading = null;
+
+    foreach ($included as $entry) {
+        $distance = (float)$entry['evaluation']['distance_km'];
+        $bestDistance = max($bestDistance, $distance);
+        $sumOverMinimum += max(0.0, $distance - $minDistance);
+        if (!empty($entry['evaluation']['reached_goal'])) {
+            $goalCount++;
+        }
+        if (!empty($entry['evaluation']['reached_goal']) && $entry['evaluation']['time_seconds']) {
+            $hours = $entry['evaluation']['time_seconds'] / 3600.0;
+            $bestTimeHours = $bestTimeHours === null ? $hours : min($bestTimeHours, $hours);
+        }
+        if ($entry['evaluation']['leading_coefficient'] !== null) {
+            $lc = (float)$entry['evaluation']['leading_coefficient'];
+            $bestLeading = $bestLeading === null ? $lc : min($bestLeading, $lc);
+        }
+    }
+
+    $distanceValidity = $count > 0
+        ? min(1.0, max(
+            $bestDistance / $nominalDistance,
+            $sumOverMinimum / max(0.1, $count * ($nominalDistance - $minDistance))
+        ))
+        : 0.0;
+    $timeValidity = $bestTimeHours !== null
+        ? min(1.0, $bestTimeHours / $nominalTimeHours)
+        : min(1.0, $bestDistance / $nominalDistance);
+    $taskValidity = min(1.0, max(0.0, $distanceValidity * max(0.25, $timeValidity)));
+    $goalRatio = $count > 0 ? $goalCount / $count : 0.0;
+
+    $components = scoring_enabled_components($task);
+    $arrivalEnabled = $components['arrival_position'] || $components['arrival_time'];
+    $baseDistanceWeight = max(0.25, min(0.9, 0.9 - (1.665 * $goalRatio) + (1.713 * $goalRatio * $goalRatio) - (0.587 * $goalRatio * $goalRatio * $goalRatio)));
+    $distanceWeight = $components['distance'] ? $baseDistanceWeight : 0.0;
+    $remainingWeight = max(0.0, 1.0 - $distanceWeight);
+    $leadingTimeRatio = 0.175; // GAP2025 default for hang gliding.
+    $arrivalRatio = 0.125;
+
+    $leadingWeight = 0.0;
+    $arrivalWeight = 0.0;
+    $timeWeight = 0.0;
+    if ($goalCount > 0) {
+        $leadingWeight = $components['leading'] ? $remainingWeight * $leadingTimeRatio : 0.0;
+        $arrivalWeight = $arrivalEnabled ? $remainingWeight * $arrivalRatio : 0.0;
+        $timeWeight = $components['time'] ? max(0.0, $remainingWeight - $leadingWeight - $arrivalWeight) : 0.0;
+    } else {
+        $leadingWeight = $components['leading'] ? $remainingWeight : 0.0;
+    }
+
+    $weightSum = $distanceWeight + $timeWeight + $leadingWeight + $arrivalWeight;
+    $leftoverWeight = max(0.0, 1.0 - $weightSum);
+    if ($leftoverWeight > 0.000001) {
+        if ($components['time'] && $goalCount > 0) {
+            $timeWeight += $leftoverWeight;
+        } elseif ($components['distance']) {
+            $distanceWeight += $leftoverWeight;
+        } elseif ($components['leading']) {
+            $leadingWeight += $leftoverWeight;
+        } elseif ($arrivalEnabled) {
+            $arrivalWeight += $leftoverWeight;
+        }
+    }
+
+    $available = [
+        'distance' => 1000.0 * $taskValidity * $distanceWeight,
+        'time' => 1000.0 * $taskValidity * $timeWeight,
+        'leading' => 1000.0 * $taskValidity * $leadingWeight,
+        'arrival' => 1000.0 * $taskValidity * $arrivalWeight,
+    ];
+
+    $goalOrder = $included;
+    usort($goalOrder, function ($a, $b) {
+        $aGoal = !empty($a['evaluation']['reached_goal']);
+        $bGoal = !empty($b['evaluation']['reached_goal']);
+        if ($aGoal !== $bGoal) {
+            return $aGoal ? -1 : 1;
+        }
+        return (($a['evaluation']['goal_time_at'] ?? '') <=> ($b['evaluation']['goal_time_at'] ?? ''));
+    });
+    $goalRanks = [];
+    $rank = 1;
+    foreach ($goalOrder as $entry) {
+        if (!empty($entry['evaluation']['reached_goal'])) {
+            $goalRanks[$entry['flight']['id']] = $rank++;
+        }
+    }
+
+    $difficulty = scoring_gap_distance_difficulty($included, $minDistance, $bestDistance);
+    $scored = [];
+    foreach ($included as $entry) {
+        $flightId = (int)$entry['flight']['id'];
+        $ev = $entry['evaluation'];
+        $distance = min($taskDistance, max($minDistance, (float)$ev['distance_km']));
+        if (!empty($difficulty['enabled'])) {
+            $distanceFraction = min(1.0, ($bestDistance > 0.0 ? $distance / (2.0 * $bestDistance) : 0.0) + scoring_gap_difficulty_fraction($distance, $difficulty));
+        } else {
+            $distanceFraction = $bestDistance > 0.0 ? min(1.0, $distance / $bestDistance) : 0.0;
+        }
+        $distancePoints = $available['distance'] * $distanceFraction;
+        $timePoints = 0.0;
+        if ($bestTimeHours !== null && !empty($ev['reached_goal']) && $ev['time_seconds']) {
+            $hours = $ev['time_seconds'] / 3600.0;
+            $zeroAt = $bestTimeHours + sqrt($bestTimeHours);
+            $fraction = $hours >= $zeroAt
+                ? 0.0
+                : max(0.0, 1.0 - pow(max(0.0, ($hours - $bestTimeHours) / max(0.001, $zeroAt - $bestTimeHours)), 5.0 / 6.0));
+            $timePoints = $available['time'] * $fraction;
+        }
+        $leadingPoints = 0.0;
+        if ($bestLeading !== null && $ev['leading_coefficient'] !== null) {
+            $lc = (float)$ev['leading_coefficient'];
+            $fraction = $lc <= $bestLeading
+                ? 1.0
+                : max(0.0, 1.0 - sqrt(max(0.0, ($lc - $bestLeading) / max(0.001, $bestLeading))));
+            $leadingPoints = $available['leading'] * $fraction;
+        }
+        $arrivalPositionPoints = 0.0;
+        $arrivalTimePoints = 0.0;
+        if (!empty($ev['reached_goal']) && isset($goalRanks[$flightId]) && $available['arrival'] > 0.0) {
+            $goalRank = $goalRanks[$flightId];
+            $arrivalFraction = $goalCount > 1 ? max(0.0, 1.0 - (($goalRank - 1) / max(1, $goalCount - 1))) : 1.0;
+            $arrivalCurve = 0.2 + (0.037 * $arrivalFraction) + (0.13 * $arrivalFraction * $arrivalFraction) + (0.633 * $arrivalFraction * $arrivalFraction * $arrivalFraction);
+            if ($components['arrival_position'] && $components['arrival_time']) {
+                $arrivalPositionPoints = $available['arrival'] * 0.5 * $arrivalCurve;
+                $arrivalTimePoints = $available['arrival'] * 0.5 * $arrivalCurve;
+            } elseif ($components['arrival_position']) {
+                $arrivalPositionPoints = $available['arrival'] * $arrivalCurve;
+            } elseif ($components['arrival_time']) {
+                $arrivalTimePoints = $available['arrival'] * $arrivalCurve;
+            }
+        }
+
+        $departurePoints = 0.0;
+        $total = $distancePoints + $timePoints + $leadingPoints + $arrivalPositionPoints + $arrivalTimePoints + $departurePoints;
+        $scored[$flightId] = [
+            'distance_points' => round($distancePoints, 1),
+            'time_points' => round($timePoints, 1),
+            'departure_points' => round($departurePoints, 1),
+            'leading_points' => round($leadingPoints, 1),
+            'arrival_position_points' => round($arrivalPositionPoints, 1),
+            'arrival_time_points' => round($arrivalTimePoints, 1),
+            'total_points' => round($total, 1),
+        ];
+    }
+
+    return [
+        'points' => $scored,
+        'summary' => [
+            'formula_version' => 'GAP2025',
+            'implementation_note' => '',
+            'pilots_scored' => $count,
+            'pilots_in_goal' => $goalCount,
+            'task_distance_km' => round($taskDistance, 3),
+            'best_distance_km' => round($bestDistance, 3),
+            'best_time_seconds' => $bestTimeHours !== null ? (int)round($bestTimeHours * 3600) : null,
+            'distance_validity' => round($distanceValidity, 4),
+            'time_validity' => round($timeValidity, 4),
+            'task_validity' => round($taskValidity, 4),
+            'goal_ratio' => round($goalRatio, 4),
+            'point_weights' => [
+                'distance' => round($distanceWeight, 4),
+                'time' => round($timeWeight, 4),
+                'leading' => round($leadingWeight, 4),
+                'arrival' => round($arrivalWeight, 4),
+            ],
+            'available_points' => [
+                'distance' => round($available['distance'], 1),
+                'time' => round($available['time'], 1),
+                'leading' => round($available['leading'], 1),
+                'arrival' => round($available['arrival'], 1),
+            ],
+            'enabled_components' => $components,
+        ],
+    ];
+}
+
+function scoring_score_task(PDO $pdo, int $taskId): array {
+    $task = scoring_load_task($pdo, $taskId);
+    if (!$task) {
+        throw new RuntimeException('Taak niet gevonden.');
+    }
+    $turnpoints = scoring_load_task_turnpoints($pdo, $taskId);
+    if (count($turnpoints) < 2) {
+        throw new RuntimeException('Voeg minimaal twee taakpunten toe voordat je scoort.');
+    }
+    $gates = scoring_load_task_gates($pdo, $taskId);
+    if (($task['task_type'] ?? 'race') === 'race' && empty($gates)) {
+        throw new RuntimeException('Een race-taak heeft minimaal een startgate nodig.');
+    }
+
+    scoring_match_task_tracklogs($pdo, $task, $turnpoints);
+    $stmt = $pdo->prepare(
+        'SELECT f.*, tl.storage_path, tl.original_filename, tl.fix_count
+         FROM rankings_scoring_task_flights f
+         JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
+         WHERE f.task_id = ?
+         ORDER BY f.is_excluded ASC, f.pilot_name ASC'
+    );
+    $stmt->execute([$taskId]);
+    $flights = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $included = [];
+    $evaluationsByFlight = [];
+    $taskDistance = scoring_task_distance_km($turnpoints);
+
+    foreach ($flights as $flight) {
+        if ((int)$flight['is_excluded'] === 1) {
+            continue;
+        }
+        if (scoring_is_manual_minimum_tracklog($flight)) {
+            $evaluation = scoring_manual_minimum_evaluation($task);
+        } else {
+            $path = scoring_public_upload_path($flight['storage_path']);
+            $igc = scoring_parse_igc_file($path);
+            $evaluation = scoring_evaluate_flight($task, $turnpoints, $gates, $igc['fixes']);
+        }
+        $included[] = ['flight' => $flight, 'evaluation' => $evaluation];
+        $evaluationsByFlight[(int)$flight['id']] = $evaluation;
+    }
+    if (empty($included)) {
+        throw new RuntimeException('Geen te scoren tracklogs gevonden voor dit taakvenster en gebied.');
+    }
+
+    $allocation = scoring_allocate_gap2025_points($task, $included, $taskDistance);
+    $rankRows = [];
+    foreach ($included as $entry) {
+        $flightId = (int)$entry['flight']['id'];
+        $points = $allocation['points'][$flightId] ?? null;
+        if ($points) {
+            $rankRows[] = ['flight_id' => $flightId, 'points' => $points['total_points'], 'pilot' => $entry['flight']['pilot_name']];
+        }
+    }
+    usort($rankRows, function ($a, $b) {
+        if (abs($a['points'] - $b['points']) < 0.0001) {
+            return strcasecmp($a['pilot'], $b['pilot']);
+        }
+        return $a['points'] < $b['points'] ? 1 : -1;
+    });
+    $ranks = [];
+    $rank = 0;
+    $shown = 0;
+    $previous = null;
+    foreach ($rankRows as $row) {
+        $shown++;
+        if ($previous === null || abs($row['points'] - $previous) > 0.0001) {
+            $rank = $shown;
+            $previous = $row['points'];
+        }
+        $ranks[$row['flight_id']] = $rank;
+    }
+
+    $update = $pdo->prepare(
+        'UPDATE rankings_scoring_task_flights
+         SET distance_km = ?, start_time_at = ?, ess_time_at = ?, goal_time_at = ?, time_seconds = ?,
+             reached_ess = ?, reached_goal = ?, distance_points = ?, time_points = ?, departure_points = ?,
+             leading_points = ?, arrival_position_points = ?, arrival_time_points = ?, total_points = ?,
+             rank_no = ?, evaluation_json = ?, scored_at = NOW()
+         WHERE id = ?'
+    );
+    foreach ($included as $entry) {
+        $flightId = (int)$entry['flight']['id'];
+        $ev = $evaluationsByFlight[$flightId];
+        $points = $allocation['points'][$flightId];
+        $update->execute([
+            $ev['distance_km'],
+            $ev['start_time_at'],
+            $ev['ess_time_at'],
+            $ev['goal_time_at'],
+            $ev['time_seconds'],
+            $ev['reached_ess'] ? 1 : 0,
+            $ev['reached_goal'] ? 1 : 0,
+            $points['distance_points'],
+            $points['time_points'],
+            $points['departure_points'],
+            $points['leading_points'],
+            $points['arrival_position_points'],
+            $points['arrival_time_points'],
+            $points['total_points'],
+            $ranks[$flightId] ?? null,
+            json_encode($ev, JSON_UNESCAPED_UNICODE),
+            $flightId,
+        ]);
+    }
+
+    $summary = $allocation['summary'];
+    $pdo->prepare(
+        "UPDATE rankings_scoring_tasks
+         SET status = CASE WHEN status = 'published' THEN 'published' ELSE 'scored' END,
+             task_distance_km = ?, scoring_summary_json = ?, scored_at = NOW()
+         WHERE id = ?"
+    )->execute([round($taskDistance, 3), json_encode($summary, JSON_UNESCAPED_UNICODE), $taskId]);
+
+    return $summary;
+}

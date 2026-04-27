@@ -39,8 +39,9 @@ try {
     $createdExpr = $memoryCreatedCol ? "m.`$memoryCreatedCol` AS mem_created" : "NULL AS mem_created";
     $photoExpr = $memoryPhotoCol ? "m.`$memoryPhotoCol` AS mem_photo" : "'' AS mem_photo";
     $orderExpr = $memoryCreatedCol ? "m.`$memoryCreatedCol` DESC, m.id DESC" : 'm.id DESC';
-    $sql = "SELECT m.id AS mem_id, m.competition_id AS mem_competition_id, $authorExpr, $textExpr, $createdExpr, $photoExpr
+    $sql = "SELECT m.id AS mem_id, m.competition_id AS mem_competition_id, c.title AS mem_competition_title, c.year AS mem_competition_year, $authorExpr, $textExpr, $createdExpr, $photoExpr
             FROM $memoryTable m
+            LEFT JOIN rankings_competitions c ON c.id = m.competition_id
             WHERE $whereVisible
             ORDER BY $orderExpr
             LIMIT 8";
@@ -121,7 +122,7 @@ app_page_start(app_site_name() . ' - Home', [
 
     <article class="card tile">
       <div class="kicker">Recent</div>
-      <h2>Laatste wedstrijden</h2>
+      <h2>Laatste NK Wedstrijden</h2>
       <?php if (!empty($latestCompetitions)): ?>
         <ul class="list-compact">
           <?php foreach ($latestCompetitions as $competition): ?>
@@ -131,7 +132,7 @@ app_page_start(app_site_name() . ' - Home', [
             </li>
           <?php endforeach; ?>
         </ul>
-        <p class="actions"><a class="btn" href="competitionlist.php">Alle wedstrijden</a></p>
+        <p class="actions"><a class="btn" href="competitionlist.php">Alle NK wedstrijden</a></p>
       <?php else: ?>
         <p class="muted">Nog geen wedstrijden beschikbaar.</p>
       <?php endif; ?>
@@ -152,6 +153,12 @@ app_page_start(app_site_name() . ' - Home', [
               $photoPath = home_memory_asset_path($memory['mem_photo'] ?? '');
               $snippet = app_truncate((string)($memory['mem_text'] ?? ''), $photoPath ? 170 : 260);
               $author = (($memory['mem_author'] ?? '') !== '') ? $memory['mem_author'] : 'Onbekend';
+              $competitionTitle = trim((string)($memory['mem_competition_title'] ?? ''));
+              $competitionYear = isset($memory['mem_competition_year']) ? (int)$memory['mem_competition_year'] : 0;
+              $competitionLabel = $competitionTitle !== '' ? $competitionTitle : 'wedstrijd';
+              if ($competitionYear > 0 && strpos($competitionLabel, (string)$competitionYear) === false) {
+                  $competitionLabel .= ' (' . $competitionYear . ')';
+              }
             ?>
             <article class="memory-slide <?= $photoPath ? 'has-photo' : 'is-text-only' ?>" style="--slide-index: <?= (int)$index ?>;">
               <?php if ($photoPath): ?>
@@ -160,7 +167,9 @@ app_page_start(app_site_name() . ' - Home', [
                 </figure>
               <?php endif; ?>
               <div class="memory-copy">
-                <div class="muted">Door <?= h($author) ?></div>
+                <div class="muted">
+                  Door <?= h($author) ?><?php if ($competitionId > 0): ?> over <a href="competition.php?id=<?= $competitionId ?>#memories"><?= h($competitionLabel) ?></a><?php endif; ?>
+                </div>
                 <p><?= h($snippet) ?></p>
                 <?php if ($competitionId > 0): ?>
                   <a href="competition.php?id=<?= $competitionId ?>#memories">Open herinnering</a>

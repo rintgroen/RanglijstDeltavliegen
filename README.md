@@ -18,6 +18,11 @@ application.
 - WPRS points management per year and class.
 - CSV competition result upload, export, and deletion.
 - Visitor memories for competitions, with admin moderation.
+- Separate competition scoring section for scorer-managed tasks, IGC uploads,
+  review/exclusion, scoring, and published results. These scored competitions
+  are stored in separate `rankings_scoring_*` tables and do not affect the Dutch
+  ranking unless their results are manually uploaded through the existing CSV
+  workflow.
 
 ## Requirements
 
@@ -33,9 +38,11 @@ No Composer dependencies are required for the normal CSV workflow.
 
 ```text
 admin/              Password-protected management pages
+database/           Optional schema extensions
 includes/           Shared application and ranking logic
 public/             Public website pages and assets
 public/uploads/     Uploaded competition memory photos
+scoring/            Scorer magic-login and task scoring workspace
 config.example.php  Example local configuration
 db.php              Database connection helper
 index.php           Front controller redirecting to the public home page
@@ -77,6 +84,16 @@ index.php           Front controller redirecting to the public home page
    - `rankings_competition_memories`
    - `rankings_nationals_meta`
    - `rankings_nationals_results`
+
+   The optional scorer-run competition scoring section also needs the tables in:
+
+   ```sh
+   mysql -u <user> -p <database> < database/scoring_schema.sql
+   ```
+
+   Re-run the same file after pulling scoring-section updates; statements use
+   `CREATE TABLE IF NOT EXISTS`, so new scoring support tables are added without
+   recreating existing data.
 
 5. Make uploaded memory photos writable by the web server.
 
@@ -124,6 +141,59 @@ task columns.
 Pilot names are matched against existing pilots by normalized name. If no match
 is found, the uploaded result is still stored with the original pilot name.
 
+## Competition Scoring Workflow
+
+Admins add allowed scorer e-mail addresses in `admin/scorers.php`. A scorer can
+request a magic login link at `scoring/login.php`, create competitions, upload
+waypoints, define tasks and start gates, build the task turnpoint sequence, match
+uploaded IGC tracks, exclude tracks from scoring, score the task, and publish
+results.
+
+Waypoint upload accepts GPX, SeeYou CUP/CSV with name/lat/lon columns,
+OziExplorer WPT, and CompeGPS/FS WPT with WGS84 latitude/longitude or UTM
+waypoint records.
+
+Scorers can also add IGC tracklogs directly on a task page. This is useful when
+pilots cannot upload themselves or when the scorer has downloaded the file from
+a pilot device. Pilot e-mail is optional for scorer-added tracklogs.
+
+When a scorer is added, the app sends a welcome email with a link to the scoring
+login page. Scorer magic-login emails use the same mail setup.
+
+Pilots upload IGC files at `public/track_upload.php` with only their name,
+e-mail address, and tracklog. Tracklogs are matched to tasks later by time window
+and task area.
+
+The scoring engine is isolated in `includes/scoring.php` and is labelled
+`GAP2025`. It implements the first operational pass for task evaluation, point
+allocation, time points, leading approximation, and publication. Before using it
+as an official replacement for FS, validate the numerical output against known
+FS/CIVL test cases for the exact GAP2025 edge cases you need.
+
+## Postmark Setup
+
+Scorer login and welcome emails are sent through Postmark when
+`POSTMARK_SERVER_TOKEN` is configured in `config.php`.
+
+1. In Postmark, open or create the Server you want to use for this site.
+2. Verify the sender address or domain that will be used as
+   `SCORING_MAIL_FROM`.
+3. Copy the Server API token from the Server's API Tokens tab.
+4. Set these values in `config.php`:
+
+   ```php
+   const SITE_BASE_URL = 'https://your-domain.example';
+   const SCORING_MAIL_FROM = 'noreply@your-domain.example';
+   const SCORING_MAIL_FROM_NAME = 'Ranglijst Deltavliegen';
+   const POSTMARK_SERVER_TOKEN = 'your-postmark-server-token';
+   const POSTMARK_MESSAGE_STREAM = 'outbound';
+   ```
+
+5. Add a scorer in `admin/scorers.php` and check that the welcome email arrives.
+
+For a dry-run test without delivering email, Postmark supports the special server
+token `POSTMARK_API_TEST`.
+
 ## Ranking Method
 
 For modern years, the ranking combines:
@@ -143,6 +213,8 @@ the complete formula.
   `public/` depending on the hosting setup.
 - Ensure `public/uploads/memories/` is writable if visitors can upload memory
   photos.
+- Ensure `public/uploads/scoring/` can be created/written by the web server if
+  scorer waypoints and pilot IGC uploads are enabled.
 - Use `ADMIN_PASSWORD_HASH` for new installs instead of the legacy
   `ADMIN_PASSWORD` fallback.
 

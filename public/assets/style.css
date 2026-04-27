@@ -156,6 +156,81 @@ pre {
   border-color: #a9ccdf;
 }
 
+.site-nav.scoring-nav {
+  background: #f8fffb;
+  border-color: #aacfb9;
+}
+
+.site-nav.public-nav {
+  align-items: stretch;
+  gap: 0.45rem;
+}
+
+.nav-cluster {
+  align-items: center;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.2rem;
+}
+
+.nav-cluster.has-active {
+  border-color: #8fbfd8;
+  box-shadow: inset 0 0 0 1px rgba(15, 111, 168, 0.08);
+}
+
+.nav-cluster-wedstrijden {
+  background: #edf7f0;
+  border-color: #b8d9c4;
+}
+
+.nav-cluster-wedstrijden.has-active {
+  border-color: #8fc9a3;
+  box-shadow: inset 0 0 0 1px rgba(23, 77, 43, 0.08);
+}
+
+.nav-cluster-single {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.nav-cluster-single.has-active {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.nav-group-label {
+  align-items: center;
+  align-self: stretch;
+  border-right: 1px solid var(--border-soft);
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0.35rem 0.55rem 0.35rem 0.35rem;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.nav-cluster.has-active .nav-group-label {
+  color: var(--primary-dark);
+}
+
+.nav-status {
+  align-items: center;
+  color: #2f6743;
+  display: inline-flex;
+  font-size: 0.88rem;
+  font-weight: 700;
+  margin-left: auto;
+  padding: 0.48rem 0.55rem;
+}
+
 .nav-link {
   border-radius: 6px;
   color: var(--text);
@@ -185,6 +260,12 @@ pre {
   box-shadow: var(--shadow);
   margin-bottom: 1rem;
   padding: 1rem;
+}
+
+.narrow-card {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 680px;
 }
 
 .panel {
@@ -337,10 +418,35 @@ textarea {
   resize: vertical;
 }
 
-input[type="checkbox"] {
+input[type="checkbox"],
+input[type="radio"] {
   display: inline-block;
   margin: 0;
   width: auto;
+}
+
+.check-row {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  min-height: 2.7rem;
+}
+
+.checkbox-grid {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  margin-top: 1rem;
+}
+
+.checkbox-grid label {
+  align-items: center;
+  background: var(--surface-strong);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.45rem;
+  padding: 0.65rem;
 }
 
 input:focus,
@@ -389,6 +495,19 @@ button.danger {
   border-color: #8a1c14;
 }
 
+.link-button {
+  background: transparent;
+  border: 0;
+  color: var(--primary-dark);
+  min-height: auto;
+  padding: 0;
+}
+
+.link-button:hover {
+  background: transparent;
+  color: var(--error-text);
+}
+
 .notice,
 .alert {
   border-radius: 8px;
@@ -422,6 +541,10 @@ table {
   width: 100%;
 }
 
+.compact-table {
+  min-width: 520px;
+}
+
 th,
 td {
   border-bottom: 1px solid var(--border-soft);
@@ -447,6 +570,40 @@ details summary {
   font-weight: 800;
 }
 
+.chip-list,
+.waypoint-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.chip-form,
+.waypoint-list span {
+  align-items: center;
+  background: #eef6fb;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--heading);
+  display: inline-flex;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0.3rem 0.55rem;
+}
+
+.waypoint-list span {
+  border-radius: 6px;
+}
+
+.waypoint-list small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.taskpoint-form {
+  align-items: end;
+}
+
 img {
   max-width: 100%;
 }
@@ -467,7 +624,26 @@ img {
 }
 
 .site-footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  justify-content: space-between;
   margin: 1.5rem 0 0.5rem;
+}
+
+.site-footer p {
+  margin: 0;
+}
+
+.footer-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.footer-links a {
+  font-size: 0.86rem;
 }
 
 .home-shell {
@@ -646,6 +822,34 @@ img {
     align-items: stretch;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .site-nav.public-nav {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .public-nav .nav-cluster {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .public-nav .nav-cluster-single {
+    grid-template-columns: 1fr;
+  }
+
+  .public-nav .nav-group-label {
+    border-bottom: 1px solid var(--border-soft);
+    border-right: 0;
+    grid-column: 1 / -1;
+    justify-content: center;
+    padding: 0.25rem 0.35rem;
+  }
+
+  .scoring-nav .nav-status {
+    grid-column: 1 / -1;
+    justify-content: center;
+    margin-left: 0;
   }
 
   .nav-link {
