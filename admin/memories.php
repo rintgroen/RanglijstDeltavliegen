@@ -1,196 +1,158 @@
 <?php
-// Debug early
-$DEBUG = isset($_GET['debug']);
-if ($DEBUG) { @ini_set('display_errors','1'); @error_reporting(E_ALL); }
+require_once __DIR__ . '/utils.php';
+require_login();
 
-require_once __DIR__ . '/../db.php';
-require_once __DIR__ . '/../config.php';
-if (session_status() !== PHP_SESSION_ACTIVE) { @session_start(); }
+app_enable_debug();
+$pdo = app_db_or_fail();
+$csrf = app_csrf_token();
 
-if (!function_exists('h')) {
-  function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
-}
+$notice = null;
+$error = null;
 
-try {
-  $pdo = db();
-} catch (Exception $e) {
-  http_response_code(500);
-  if ($DEBUG) echo '<pre>DB connect failed: '.h($e->getMessage()).'</pre>';
-  exit;
-}
-
-// CSRF
-if (empty($_SESSION['csrf_token'])) { $_SESSION['csrf_token'] = bin2hex(random_bytes(16)); }
-$CSRF = $_SESSION['csrf_token'];
-
-// Moderation postback (bulk or single)
-$notice = null; $error = null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mem_admin_action'])) {
-  $csrf_ok = isset($_POST['csrf']) && hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf']);
-  if (!$csrf_ok) {
-    $error = 'Ongeldige CSRF-token.';
-  } else {
-    $ids = array();
-    if (isset($_POST['memory_id']) && is_array($_POST['memory_id'])) {
-      foreach ($_POST['memory_id'] as $mid) { $ids[] = (int)$mid; }
-    } elseif (isset($_POST['memory_id'])) {
-      $ids[] = (int)$_POST['memory_id'];
-    }
-    $target = isset($_POST['target']) ? (string)$_POST['target'] : '';
-    if (!empty($ids) && in_array($target, array('show','hide'), true)) {
-      $val = ($target === 'show') ? 1 : 0;
-      try {
-        $in  = implode(',', array_fill(0, count($ids), '?'));
-        $sql = "UPDATE rankings_competition_memories SET is_visible={$val} WHERE id IN ($in)";
-        $st  = $pdo->prepare($sql);
-        $st->execute($ids);
-        $notice = ($target === 'show') ? 'Inzending(en) zichtbaar gemaakt.' : 'Inzending(en) verborgen.';
-      } catch (Exception $e) {
-        $error = 'Moderatie mislukt: '.h($e->getMessage());
-      }
+    if (!app_check_csrf()) {
+        $error = 'Ongeldige CSRF-token.';
     } else {
-      $error = 'Geen geldige selectie opgegeven.';
+        $ids = [];
+        $target = (string)($_POST['target'] ?? '');
+        $singleAction = (string)($_POST['single_action'] ?? '');
+        if (preg_match('/^(show|hide):(\d+)$/', $singleAction, $match)) {
+            $target = $match[1];
+            $ids[] = (int)$match[2];
+        } elseif (isset($_POST['memory_id']) && is_array($_POST['memory_id'])) {
+            foreach ($_POST['memory_id'] as $memoryId) {
+                $memoryId = (int)$memoryId;
+                if ($memoryId > 0) {
+                    $ids[] = $memoryId;
+                }
+            }
+        }
+        $ids = array_values(array_unique($ids));
+
+        if (empty($ids) || !in_array($target, ['show', 'hide'], true)) {
+            $error = 'Geen geldige selectie opgegeven.';
+        } else {
+            try {
+                $value = $target === 'show' ? 1 : 0;
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $stmt = $pdo->prepare("UPDATE rankings_competition_memories SET is_visible = $value WHERE id IN ($placeholders)");
+                $stmt->execute($ids);
+                $notice = $target === 'show' ? 'Inzending(en) zichtbaar gemaakt.' : 'Inzending(en) verborgen.';
+            } catch (Throwable $e) {
+                $error = app_debug_enabled() ? 'Moderatie mislukt: ' . $e->getMessage() : 'Moderatie mislukt.';
+            }
+        }
     }
-  }
 }
 
-// Filters
-$filter = isset($_GET['filter']) ? (string)$_GET['filter'] : 'all'; // all|visible|hidden
+$filter = (string)($_GET['filter'] ?? 'all');
 $where = '';
-if ($filter === 'visible') $where = 'WHERE m.is_visible = 1';
-elseif ($filter === 'hidden') $where = 'WHERE m.is_visible = 0';
+if ($filter === 'visible') {
+    $where = 'WHERE m.is_visible = 1';
+} elseif ($filter === 'hidden') {
+    $where = 'WHERE m.is_visible = 0';
+} else {
+    $filter = 'all';
+}
 
-// Load memories (latest first)
-$rows = array();
+$rows = [];
 try {
-  $sql = "SELECT m.id, m.competition_id, m.author_name, m.title, m.body, m.photo_path, m.created_at, m.is_visible,
-                 c.title AS comp_title, c.year AS comp_year, c.class AS comp_class
-          FROM rankings_competition_memories m
-          JOIN rankings_competitions c ON c.id = m.competition_id
-          $where
-          ORDER BY m.created_at DESC
-          LIMIT 200";
-  $rs = $pdo->query($sql);
-  $rows = $rs ? $rs->fetchAll(PDO::FETCH_ASSOC) : array();
-} catch (Exception $e) { if ($DEBUG) echo '<pre>Load failed: '.h($e->getMessage()).'</pre>'; }
+    $sql = "SELECT m.id, m.competition_id, m.author_name, m.title, m.body, m.photo_path, m.created_at, m.is_visible,
+                   c.title AS comp_title, c.year AS comp_year, c.class AS comp_class
+            FROM rankings_competition_memories m
+            JOIN rankings_competitions c ON c.id = m.competition_id
+            $where
+            ORDER BY m.created_at DESC
+            LIMIT 200";
+    $stmt = $pdo->query($sql);
+    $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+} catch (Throwable $e) {
+    if (app_debug_enabled()) {
+        $error = 'Herinneringen laden mislukt: ' . $e->getMessage();
+    }
+}
 
-?><!doctype html>
-<html lang="nl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Admin – Memories</title>
-  <link rel="stylesheet" href="../public/assets/style.css">
-  <style>
-    .muted { color: #374151; }
-    .toolbar { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; }
-    .grid { overflow-x:auto; }
-    table th, table td { white-space: nowrap; }
-    .thumb { max-height: 64px; border-radius:.5rem; }
-  </style>
-</head>
-<body class="container">
-<header class="topbar">
-  <h1><a href="dashboard.php" class="logo">Memories – Admin</a></h1>
-</header>
-
-<!-- Public menu -->
-<nav class="card" style="margin:1rem 0; padding:.5rem 1rem;">
-  <a href="../public/ranking.php">Klasse 1</a> ·
-  <a href="../public/sportclass.php">Sportklasse</a> ·
-  <a href="../public/competitionlist.php">Wedstrijden</a> ·
-  <a href="../public/explanation.php">Toelichting</a>
-</nav>
-
-<!-- Admin menu -->
-<nav class="card" style="margin:.5rem 0 1rem; padding:.5rem 1rem;">
-  <a href="dashboard.php">Dashboard</a> ·
-  <a href="pilots.php">Pilots</a> ·
-  <a href="world_points.php">World points</a> ·
-  <a href="competition_upload.php">Competition upload</a> ·
-  <strong>Memories</strong>
-</nav>
-
+app_page_start('Herinneringen - Admin', [
+    'active_admin' => 'memories',
+    'description' => 'Herinneringen modereren voor Ranglijst Deltavliegen.',
+]);
+?>
 <main class="card">
-  <h2>Memories-beheer</h2>
-
-  <?php if (!empty($notice)): ?><div class="alert success"><?= h($notice) ?></div><?php endif; ?>
-  <?php if (!empty($error)): ?><div class="alert error"><?= h($error) ?></div><?php endif; ?>
+  <h1>Herinneringen</h1>
+  <?php if ($notice): ?><div class="alert success"><?= h($notice) ?></div><?php endif; ?>
+  <?php if ($error): ?><div class="alert error"><?= h($error) ?></div><?php endif; ?>
 
   <form method="get" class="toolbar">
     <label>Filter
       <select name="filter" onchange="this.form.submit()">
-        <option value="all" <?= $filter==='all'?'selected':'' ?>>Alles</option>
-        <option value="visible" <?= $filter==='visible'?'selected':'' ?>>Zichtbaar</option>
-        <option value="hidden" <?= $filter==='hidden'?'selected':'' ?>>Verborgen</option>
+        <option value="all" <?= $filter === 'all' ? 'selected' : '' ?>>Alles</option>
+        <option value="visible" <?= $filter === 'visible' ? 'selected' : '' ?>>Zichtbaar</option>
+        <option value="hidden" <?= $filter === 'hidden' ? 'selected' : '' ?>>Verborgen</option>
       </select>
     </label>
+    <noscript><button type="submit">Filteren</button></noscript>
   </form>
 
-  <form method="post" class="grid" style="margin-top: .75rem;">
-    <input type="hidden" name="csrf" value="<?= h($CSRF) ?>">
+  <form method="post">
+    <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
     <input type="hidden" name="mem_admin_action" value="moderate">
-
-    <table class="striped">
-      <thead>
-        <tr>
-          <th><input type="checkbox" onclick="document.querySelectorAll('.chk').forEach(c=>c.checked=this.checked)"></th>
-          <th>ID</th>
-          <th>Datum</th>
-          <th>Status</th>
-          <th>Wedstrijd</th>
-          <th>Auteur</th>
-          <th>Titel</th>
-          <th>Foto</th>
-          <th>Tekst (snippet)</th>
-          <th>Acties</th>
-        </tr>
-      </thead>
-      <tbody>
-        <?php if (empty($rows)): ?>
-          <tr><td colspan="10" class="muted">Geen resultaten.</td></tr>
-        <?php else: ?>
-          <?php foreach ($rows as $r): ?>
-            <?php
-              $snippet = trim((string)($r['body'] ?: ''));
-              if (mb_strlen($snippet) > 140) $snippet = mb_substr($snippet, 0, 140).'…';
-              $compLink = '../public/competition.php?id='.(int)$r['competition_id'].'#memories';
-              $isVis = (int)$r['is_visible'];
-            ?>
-            <tr>
-              <td><input type="checkbox" class="chk" name="memory_id[]" value="<?= (int)$r['id'] ?>"></td>
-              <td><?= (int)$r['id'] ?></td>
-              <td><?= h(date('Y-m-d H:i', strtotime($r['created_at']))) ?></td>
-              <td><?= $isVis ? 'Zichtbaar' : 'Verborgen' ?></td>
-              <td><a href="<?= h($compLink) ?>"><?= h(($r['comp_title'] ?: 'Wedstrijd').' – '.(int)$r['comp_year'].' ('.($r['comp_class'] ?: '').')') ?></a></td>
-              <td><?= h($r['author_name']) ?></td>
-              <td><?= h($r['title'] ?: '') ?></td>
-              <td><?php if (!empty($r['photo_path'])): ?><img class="thumb" src="<?= h('../public/'.$r['photo_path']) ?>" alt="thumb"><?php endif; ?></td>
-              <td><?= nl2br(h($snippet)) ?></td>
-              <td>
-                <?php if ($isVis): ?>
-                  <button class="btn" name="target" value="hide" formaction="memories.php">Verbergen</button>
-                <?php else: ?>
-                  <button class="btn" name="target" value="show" formaction="memories.php">Zichtbaar</button>
-                <?php endif; ?>
-              </td>
-            </tr>
-          <?php endforeach; ?>
-        <?php endif; ?>
-      </tbody>
-    </table>
+    <div class="table-responsive">
+      <table class="striped">
+        <thead>
+          <tr>
+            <th><input type="checkbox" onclick="document.querySelectorAll('.memory-check').forEach((item) => item.checked = this.checked)" aria-label="Alles selecteren"></th>
+            <th>ID</th>
+            <th>Datum</th>
+            <th>Status</th>
+            <th>Wedstrijd</th>
+            <th>Auteur</th>
+            <th>Titel</th>
+            <th>Foto</th>
+            <th>Tekst</th>
+            <th>Acties</th>
+          </tr>
+        </thead>
+        <tbody>
+          <?php if (empty($rows)): ?>
+            <tr><td colspan="10" class="muted">Geen resultaten.</td></tr>
+          <?php else: ?>
+            <?php foreach ($rows as $row): ?>
+              <?php
+                $snippet = app_truncate((string)($row['body'] ?: ''), 140);
+                $competitionLink = '../public/competition.php?id=' . (int)$row['competition_id'] . '#memories';
+                $isVisible = (int)$row['is_visible'];
+                $competitionLabel = ($row['comp_title'] ?: 'Wedstrijd') . ' - ' . (int)$row['comp_year'] . ' (' . ($row['comp_class'] ?: '') . ')';
+              ?>
+              <tr>
+                <td><input type="checkbox" class="memory-check" name="memory_id[]" value="<?= (int)$row['id'] ?>"></td>
+                <td><?= (int)$row['id'] ?></td>
+                <td><?= h(date('Y-m-d H:i', strtotime($row['created_at']))) ?></td>
+                <td><?= $isVisible ? 'Zichtbaar' : 'Verborgen' ?></td>
+                <td><a href="<?= h($competitionLink) ?>"><?= h($competitionLabel) ?></a></td>
+                <td><?= h($row['author_name']) ?></td>
+                <td><?= h($row['title'] ?: '') ?></td>
+                <td><?php if (!empty($row['photo_path'])): ?><img class="thumb" src="<?= h('../public/' . $row['photo_path']) ?>" alt="Foto"><?php endif; ?></td>
+                <td><?= h($snippet) ?></td>
+                <td>
+                  <?php if ($isVisible): ?>
+                    <button name="single_action" value="hide:<?= (int)$row['id'] ?>" type="submit">Verbergen</button>
+                  <?php else: ?>
+                    <button name="single_action" value="show:<?= (int)$row['id'] ?>" type="submit">Zichtbaar</button>
+                  <?php endif; ?>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </tbody>
+      </table>
+    </div>
 
     <?php if (!empty($rows)): ?>
-      <div style="margin-top:.5rem; display:flex; gap:.5rem; align-items:center;">
-        <button class="btn" name="target" value="show" type="submit">Maak selectie zichtbaar</button>
-        <button class="btn" name="target" value="hide" type="submit">Verberg selectie</button>
-      </div>
+      <p class="inline">
+        <button name="target" value="show" type="submit">Maak selectie zichtbaar</button>
+        <button name="target" value="hide" type="submit">Verberg selectie</button>
+      </p>
     <?php endif; ?>
   </form>
 </main>
-
-<footer class="muted" style="margin-top:2rem;">
-  <p>Admin – Memories</p>
-</footer>
-</body>
-</html>
+<?php app_page_end('Admin - ' . app_site_name()); ?>

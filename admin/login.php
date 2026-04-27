@@ -1,34 +1,38 @@
 <?php
 require_once __DIR__ . '/utils.php';
-if (is_logged_in()) { header('Location: dashboard.php'); exit; }
+
+if (is_logged_in()) {
+    header('Location: dashboard.php');
+    exit;
+}
+
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $pass = $_POST['password'] ?? '';
-    if (hash_equals(ADMIN_PASSWORD, $pass)) {
+    $password = (string)($_POST['password'] ?? '');
+    if (admin_password_matches($password)) {
         $_SESSION['is_admin'] = true;
+        session_regenerate_id(true);
         header('Location: dashboard.php');
         exit;
-    } else {
-        $error = 'Incorrect password';
     }
+    $error = 'Onjuist wachtwoord.';
 }
+
+app_page_start('Admin login - ' . app_site_name(), [
+    'active_admin' => '',
+    'show_public_nav' => false,
+    'show_admin_nav' => false,
+    'description' => 'Admin login voor Ranglijst Deltavliegen.',
+]);
 ?>
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Admin Login – <?=h(SITE_NAME)?></title>
-  <link rel="stylesheet" href="../public/assets/style.css">
-</head>
-<body class="container">
-  <h1>Admin Login</h1>
-  <?php if ($error): ?><div class="notice error"><?=h($error)?></div><?php endif; ?>
-  <form method="post" class="card">
-    <label>Password<br>
-      <input type="password" name="password" required>
+<main class="card">
+  <h1>Admin login</h1>
+  <?php if ($error): ?><div class="notice error"><?= h($error) ?></div><?php endif; ?>
+  <form method="post">
+    <label>Wachtwoord
+      <input type="password" name="password" required autocomplete="current-password">
     </label>
-    <button type="submit">Login</button>
+    <p><button type="submit">Inloggen</button></p>
   </form>
-</body>
-</html>
+</main>
+<?php app_page_end('Admin - ' . app_site_name()); ?>

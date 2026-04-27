@@ -1,22 +1,15 @@
 <?php
-// Debug mode via ?debug=1
-$DEBUG = isset($_GET['debug']);
-if ($DEBUG) { @ini_set('display_errors','1'); @error_reporting(E_ALL); }
+require_once __DIR__ . '/utils.php';
+require_login();
 
-require_once __DIR__ . '/../db.php';
-require_once __DIR__ . '/../config.php';
-
-if (session_status() !== PHP_SESSION_ACTIVE) { @session_start(); }
-
-if (!function_exists('h')) {
-  function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
-}
+app_enable_debug();
+$DEBUG = app_debug_enabled();
 
 if (!function_exists('normalize_name')) {
   function normalize_name($s) {
     $s = (string)$s;
     $s = trim(preg_replace('/\s+/u', ' ', $s));          // collapse whitespace
-    $lower = mb_strtolower($s, 'UTF-8');                 // lower
+    $lower = function_exists('mb_strtolower') ? mb_strtolower($s, 'UTF-8') : strtolower($s);
     $ascii = $lower;
     if (function_exists('iconv')) {
       $t = @iconv('UTF-8', 'ASCII//TRANSLIT', $lower);
@@ -35,8 +28,7 @@ try {
 }
 
 // CSRF
-if (empty($_SESSION['csrf_token'])) { $_SESSION['csrf_token'] = bin2hex(random_bytes(16)); }
-$CSRF = $_SESSION['csrf_token'];
+$CSRF = app_csrf_token();
 
 /** Helpers: parsing uploads **/
 function detect_delimiter($line) {
@@ -63,14 +55,14 @@ function parse_csv_file($tmp_path) {
   $cols = array();
   foreach ($header as $c) { $cols[] = is_string($c) ? trim($c) : (string)$c; }
   $colCount = count($cols);
-  if ($colCount < 2) { fclose($fh); throw new Exception('Minimaal: Piloot | …taken… [| Totaal]'); }
+  if ($colCount < 2) { fclose($fh); throw new Exception('Minimaal: Piloot | ...taken... [| Totaal]'); }
 
   $last = strtolower(trim((string)$cols[$colCount-1]));
   $hasTotal = ($last === 'totaal' || $last === 'total');
 
   // Determine task headers
   if ($hasTotal) {
-    if ($colCount < 3) { fclose($fh); throw new Exception('Minimaal: Piloot | …taken… | Totaal'); }
+    if ($colCount < 3) { fclose($fh); throw new Exception('Minimaal: Piloot | ...taken... | Totaal'); }
     $headers = array_slice($cols, 1, $colCount - 2);
   } else {
     $headers = array_slice($cols, 1); // all remaining columns are tasks
@@ -119,14 +111,14 @@ function parse_xlsx_file($tmp_path) {
   $cols = array();
   foreach ($header as $c) { $cols[] = is_string($c) ? trim($c) : (string)$c; }
   $colCount = count($cols);
-  if ($colCount < 2) throw new Exception('Minimaal: Piloot | …taken… [| Totaal]');
+  if ($colCount < 2) throw new Exception('Minimaal: Piloot | ...taken... [| Totaal]');
 
   $last = strtolower(trim((string)$cols[$colCount-1]));
   $hasTotal = ($last === 'totaal' || $last === 'total');
 
   // Determine task headers
   if ($hasTotal) {
-    if ($colCount < 3) throw new Exception('Minimaal: Piloot | …taken… | Totaal');
+    if ($colCount < 3) throw new Exception('Minimaal: Piloot | ...taken... | Totaal');
     $headers = array_slice($cols, 1, $colCount - 2);
   } else {
     $headers = array_slice($cols, 1);
@@ -163,7 +155,7 @@ function parse_xlsx_file($tmp_path) {
 // Build in-memory pilot maps (by name) to resolve pilot_id
 function load_pilot_maps(PDO $pdo) {
   $maps = ['exact'=>[], 'ascii'=>[]];
-  $tables = ['pilots', 'rankings_pilots'];
+  $tables = ['rankings_pilots', 'pilots'];
   $loaded = false;
   foreach ($tables as $t) {
     try {
@@ -198,7 +190,7 @@ $admin_notice = null; $admin_error = null;
 // Handle actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $action = isset($_POST['action']) ? (string)$_POST['action'] : '';
-  if (!isset($_POST['csrf']) || !hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf'])) {
+  if (!app_check_csrf()) {
     $admin_error = 'Ongeldige CSRF-token.';
   } else {
     try {
@@ -325,53 +317,23 @@ try {
   if ($rs) { $comp_rows = $rs->fetchAll(PDO::FETCH_ASSOC); }
 } catch (Exception $e) { /* ignore */ }
 
-?><!doctype html>
-<html lang="nl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Admin – Competition upload</title>
-  <link rel="stylesheet" href="../public/assets/style.css">
-  <style>
-    .admin-nav a { margin-right: .6rem; }
-    .muted { color: #374151; }
-    .grid { overflow-x: auto; }
-  </style>
-</head>
-<body class="container">
-<header class="topbar">
-  <h1><a href="../public/ranking.php" class="logo">Ranglijst Deltavliegen – Admin</a></h1>
-</header>
-
-<!-- Public menu -->
-<nav class="card" style="margin:1rem 0; padding:.5rem 1rem;">
-  <a href="../public/ranking.php">Klasse 1</a> ·
-  <a href="../public/sportclass.php">Sportklasse</a> ·
-  <a href="../public/competitionlist.php">Wedstrijden</a> ·
-  <a href="../public/explanation.php">Toelichting</a>
-</nav>
-
-<!-- Admin menu -->
-<nav class="card admin-nav" style="margin:.5rem 0 1rem; padding:.5rem 1rem;">
-  <a href="dashboard.php">Dashboard</a> ·
-  <a href="pilots.php">Pilots</a> ·
-  <a href="world_points.php">World points</a> ·
-  <a href="competition_upload.php"><strong>Competition upload</strong></a> ·
-  <a href="memories.php">Memories</a>
-</nav>
-
+app_page_start('Wedstrijd upload - Admin', [
+  'active_admin' => 'competition_upload',
+  'description' => 'Wedstrijdresultaten uploaden en beheren.',
+]);
+?>
 <main class="card">
-  <h2>Competition upload</h2>
+  <h1>Wedstrijd upload</h1>
 
   <?php if (!empty($admin_notice)): ?><div class="alert success"><?= h($admin_notice) ?></div><?php endif; ?>
   <?php if (!empty($admin_error)): ?><div class="alert error"><?= h($admin_error) ?></div><?php endif; ?>
 
-  <section class="card" style="padding:1rem; margin-bottom:1rem;">
+  <section class="panel">
     <h3>Nieuwe wedstrijd uploaden</h3>
     <form method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf" value="<?= h($CSRF) ?>">
       <input type="hidden" name="action" value="upload_competition">
-      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:.75rem;">
+      <div class="grid">
         <label>Jaar
           <input type="number" name="year" required>
         </label>
@@ -384,25 +346,23 @@ try {
             <option value="Sportklasse">Sportklasse</option>
           </select>
         </label>
-        <label>Resultatenbestand (CSV of XLSX)
-          <input type="file" name="results_file" accept=".csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required>
+        <label>Resultatenbestand (CSV)
+          <input type="file" name="results_file" accept=".csv,text/csv" required>
         </label>
       </div>
-      <div style="margin-top:.75rem;">
-        <button class="btn" type="submit">Uploaden</button>
-      </div>
+      <p><button type="submit">Uploaden</button></p>
     </form>
-    <p class="muted" style="margin-top:.5rem;">
+    <p class="muted">
       Bestandsindeling: <em>eerste kolom Piloot</em>, tussenliggende kolommen zijn taken, <em>optioneel</em> een laatste kolom <em>Totaal</em>.
     </p>
   </section>
 
-  <section class="card" style="padding:1rem;">
+  <section class="panel">
     <h3>Wedstrijden</h3>
     <?php if (empty($comp_rows)): ?>
       <p class="muted">Geen wedstrijden gevonden.</p>
     <?php else: ?>
-      <div class="grid">
+      <div class="table-responsive">
         <table class="striped">
           <thead>
             <tr>
@@ -422,20 +382,22 @@ try {
                 <td><?= h($c['title']) ?></td>
                 <td><?= h($c['class']) ?></td>
                 <td><?= h($c['created_at']) ?></td>
-                <td style="white-space:nowrap; display:flex; gap:.5rem; align-items:center;">
-                  <a class="btn" href="../public/competition.php?id=<?= (int)$c['id'] ?>" target="_blank">Open</a>
-                  <form method="post" style="display:inline;">
+                <td>
+                  <div class="inline">
+                  <a class="btn secondary" href="../public/competition.php?id=<?= (int)$c['id'] ?>" target="_blank" rel="noopener">Open</a>
+                  <form method="post">
                     <input type="hidden" name="csrf" value="<?= h($CSRF) ?>">
                     <input type="hidden" name="action" value="download_csv">
                     <input type="hidden" name="comp_id" value="<?= (int)$c['id'] ?>">
-                    <button class="btn" type="submit">Download CSV</button>
+                    <button type="submit">Download CSV</button>
                   </form>
-                  <form method="post" style="display:inline;" onsubmit="return confirm('Weet je zeker dat je deze wedstrijd wilt verwijderen? Dit kan niet ongedaan worden gemaakt.');">
+                  <form method="post" onsubmit="return confirm('Weet je zeker dat je deze wedstrijd wilt verwijderen? Dit kan niet ongedaan worden gemaakt.');">
                     <input type="hidden" name="csrf" value="<?= h($CSRF) ?>">
                     <input type="hidden" name="action" value="delete_competition">
                     <input type="hidden" name="comp_id" value="<?= (int)$c['id'] ?>">
-                    <button class="btn" type="submit">Verwijderen</button>
+                    <button class="danger" type="submit">Verwijderen</button>
                   </form>
+                  </div>
                 </td>
               </tr>
             <?php endforeach; ?>
@@ -446,8 +408,4 @@ try {
   </section>
 </main>
 
-<footer class="muted" style="margin-top:2rem;">
-  <p>Admin – Competition upload</p>
-</footer>
-</body>
-</html>
+<?php app_page_end('Admin - ' . app_site_name()); ?>
