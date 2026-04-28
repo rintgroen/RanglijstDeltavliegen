@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Competition Scoring Brochure - Ranglijst Deltavliegen</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #edf7fc;
+      --bg-soft: #f6fbfe;
+      --surface: #ffffff;
+      --surface-strong: #f8fcff;
+      --border: #bfd8e8;
+      --border-soft: #d8e8f2;
+      --text: #102436;
+      --muted: #516779;
+      --heading: #0b2033;
+      --primary: #0f6fa8;
+      --primary-dark: #0a4f7a;
+      --primary-soft: #d9eef8;
+      --green: #2f6743;
+      --green-soft: #e8f6ed;
+      --green-border: #8fc9a3;
+      --red: #b42318;
+      --shadow: 0 14px 36px rgba(16, 36, 54, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+    }
+
+    body {
+      background: #dcebf2;
+      color: var(--text);
+      font: 15px/1.48 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1,
+    h2,
+    h3 {
+      color: var(--heading);
+      line-height: 1.1;
+    }
+
+    h1 {
+      font-size: 44px;
+      letter-spacing: 0;
+      max-width: 11ch;
+    }
+
+    h2 {
+      font-size: 28px;
+    }
+
+    h3 {
+      font-size: 15px;
+    }
+
+    p {
+      max-width: 62ch;
+    }
+
+    .page {
+      background: linear-gradient(180deg, var(--bg) 0%, #f9fcfe 100%);
+      height: 297mm;
+      margin: 0 auto;
+      overflow: hidden;
+      padding: 15mm 17mm;
+      position: relative;
+      width: 210mm;
+    }
+
+    .page + .page {
+      break-before: page;
+      page-break-before: always;
+    }
+
+    .brand-row,
+    .footer-row {
+      align-items: center;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .brand {
+      align-items: center;
+      color: var(--heading);
+      display: flex;
+      font-size: 22px;
+      font-weight: 850;
+      gap: 10px;
+      letter-spacing: 0;
+    }
+
+    .badge {
+      background: var(--primary-soft);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--primary-dark);
+      font-size: 11px;
+      font-weight: 850;
+      padding: 4px 9px;
+      text-transform: uppercase;
+    }
+
+    .kicker {
+      color: var(--primary-dark);
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .hero {
+      display: grid;
+      gap: 22px;
+      grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+      margin-top: 12mm;
+    }
+
+    .hero-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      justify-content: center;
+    }
+
+    .hero-copy .lede {
+      color: #244155;
+      font-size: 18px;
+      line-height: 1.38;
+      max-width: 31ch;
+    }
+
+    .benefit-strip {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 15px;
+    }
+
+    .benefit {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      min-height: 86px;
+      padding: 12px;
+    }
+
+    .benefit strong {
+      color: var(--heading);
+      display: block;
+      font-size: 18px;
+      line-height: 1.15;
+      margin-bottom: 8px;
+    }
+
+    .browser,
+    .phone,
+    .mini-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .browser-top {
+      align-items: center;
+      background: #e2f1f8;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 7px;
+      padding: 10px 12px;
+    }
+
+    .dot {
+      background: #9cbdd1;
+      border-radius: 999px;
+      display: block;
+      height: 9px;
+      width: 9px;
+    }
+
+    .address {
+      background: #ffffff;
+      border: 1px solid var(--border-soft);
+      border-radius: 6px;
+      color: var(--muted);
+      flex: 1;
+      font-size: 11px;
+      font-weight: 700;
+      margin-left: 5px;
+      overflow: hidden;
+      padding: 5px 8px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .browser-body {
+      padding: 11px;
+    }
+
+    .site-header {
+      align-items: center;
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .site-title {
+      color: var(--heading);
+      font-size: 18px;
+      font-weight: 850;
+    }
+
+    .nav {
+      background: #f8fffb;
+      border: 1px solid #aacfb9;
+      border-radius: 8px;
+      display: flex;
+      gap: 5px;
+      margin-bottom: 9px;
+      padding: 6px;
+    }
+
+    .nav span {
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 750;
+      padding: 6px 8px;
+    }
+
+    .nav .active {
+      background: var(--primary);
+      color: #ffffff;
+    }
+
+    .visual-section {
+      background: var(--surface-strong);
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      margin-bottom: 9px;
+      padding: 10px;
+    }
+
+    .visual-section h3 {
+      font-size: 17px;
+      margin-bottom: 5px;
+    }
+
+    .stat-grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 8px;
+    }
+
+    .stat {
+      background: #ffffff;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      padding: 9px;
+    }
+
+    .stat span {
+      color: var(--muted);
+      display: block;
+      font-size: 10px;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    .stat strong {
+      color: var(--heading);
+      display: block;
+      font-size: 15px;
+      margin-top: 4px;
+    }
+
+    .task-area {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1fr 1fr;
+      margin-top: 9px;
+    }
+
+    .turnpoints {
+      display: grid;
+      gap: 7px;
+    }
+
+    .turnpoint {
+      align-items: center;
+      background: #ffffff;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 22px minmax(0, 1fr) auto;
+      min-height: 31px;
+      padding: 5px 7px;
+    }
+
+    .turnpoint b {
+      color: var(--primary-dark);
+    }
+
+    .turnpoint span {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .map {
+      background:
+        linear-gradient(135deg, rgba(15,111,168,0.15), rgba(143,201,163,0.18)),
+        repeating-linear-gradient(0deg, rgba(255,255,255,0.55) 0 1px, transparent 1px 28px),
+        repeating-linear-gradient(90deg, rgba(255,255,255,0.55) 0 1px, transparent 1px 28px);
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      min-height: 135px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .route {
+      inset: 16px 18px 18px 16px;
+      position: absolute;
+    }
+
+    .route svg {
+      height: 100%;
+      overflow: visible;
+      width: 100%;
+    }
+
+    .marker {
+      align-items: center;
+      background: #ffffff;
+      border: 3px solid var(--primary);
+      border-radius: 999px;
+      color: var(--heading);
+      display: flex;
+      font-size: 11px;
+      font-weight: 900;
+      height: 30px;
+      justify-content: center;
+      position: absolute;
+      width: 30px;
+    }
+
+    .marker.sss {
+      border-color: #2f7d32;
+    }
+
+    .marker.ess {
+      border-color: var(--red);
+    }
+
+    .qr-layout {
+      align-items: center;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: minmax(0, 1fr) 104px;
+    }
+
+    .code-box {
+      background: #ffffff;
+      border: 1px solid #9cbdd1;
+      border-radius: 6px;
+      color: #244155;
+      font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      height: 54px;
+      overflow: hidden;
+      padding: 8px;
+    }
+
+    .qr {
+      background: #ffffff;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      display: grid;
+      gap: 2px;
+      grid-template-columns: repeat(13, 1fr);
+      padding: 7px;
+    }
+
+    .qr i {
+      aspect-ratio: 1;
+      background: #ffffff;
+      display: block;
+    }
+
+    .qr i.on {
+      background: #102436;
+    }
+
+    .story-band {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 9mm;
+      padding: 13px;
+    }
+
+    .story-step {
+      border-right: 1px solid var(--border-soft);
+      padding-right: 11px;
+    }
+
+    .story-step:last-child {
+      border-right: 0;
+      padding-right: 0;
+    }
+
+    .step-no {
+      align-items: center;
+      background: var(--primary);
+      border-radius: 999px;
+      color: #ffffff;
+      display: inline-flex;
+      font-size: 12px;
+      font-weight: 900;
+      height: 26px;
+      justify-content: center;
+      margin-bottom: 9px;
+      width: 26px;
+    }
+
+    .story-step h3 {
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+
+    .story-step p {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .page-title {
+      align-items: end;
+      display: flex;
+      gap: 22px;
+      justify-content: space-between;
+      margin-top: 15mm;
+    }
+
+    .page-title h2 {
+      font-size: 36px;
+      max-width: 13ch;
+    }
+
+    .page-title p {
+      color: #244155;
+      font-size: 17px;
+      max-width: 42ch;
+    }
+
+    .workflow-grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 14mm;
+    }
+
+    .mini-card {
+      min-height: 250px;
+      padding: 15px;
+    }
+
+    .mini-card h3 {
+      font-size: 20px;
+      margin-bottom: 9px;
+    }
+
+    .mini-card > p {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    .phone {
+      border-radius: 22px;
+      margin: 0 auto;
+      max-width: 218px;
+      padding: 10px;
+    }
+
+    .phone-screen {
+      background: var(--bg-soft);
+      border: 1px solid var(--border-soft);
+      border-radius: 16px;
+      padding: 14px;
+    }
+
+    .field {
+      margin-top: 10px;
+    }
+
+    .field label {
+      color: var(--heading);
+      display: block;
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+
+    .input {
+      background: #ffffff;
+      border: 1px solid #9cbdd1;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 8px;
+    }
+
+    .button {
+      background: var(--primary);
+      border: 1px solid var(--primary-dark);
+      border-radius: 6px;
+      color: #ffffff;
+      display: inline-flex;
+      font-size: 12px;
+      font-weight: 850;
+      justify-content: center;
+      margin-top: 12px;
+      min-height: 34px;
+      padding: 8px 12px;
+      width: 100%;
+    }
+
+    .candidate-card {
+      background: var(--surface-strong);
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--border-soft);
+      font-size: 11px;
+      padding: 7px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #e2f1f8;
+      color: #16364d;
+      font-weight: 850;
+    }
+
+    tbody tr:nth-child(odd) {
+      background: #f7fbfe;
+    }
+
+    .match-pill,
+    .published-pill {
+      border-radius: 999px;
+      display: inline-flex;
+      font-size: 10px;
+      font-weight: 850;
+      padding: 3px 7px;
+      white-space: nowrap;
+    }
+
+    .match-pill {
+      background: var(--green-soft);
+      border: 1px solid var(--green-border);
+      color: #174d2b;
+    }
+
+    .published-pill {
+      background: var(--primary-soft);
+      border: 1px solid var(--border);
+      color: var(--primary-dark);
+    }
+
+    .score-summary {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin: 12px 0;
+    }
+
+    .score-summary div {
+      background: #ffffff;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    .score-summary span {
+      color: var(--muted);
+      display: block;
+      font-size: 9px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .score-summary strong {
+      color: var(--heading);
+      display: block;
+      font-size: 16px;
+      margin-top: 3px;
+    }
+
+    .closing-strip {
+      align-items: center;
+      background: var(--heading);
+      border-radius: 8px;
+      bottom: 17mm;
+      color: #ffffff;
+      display: grid;
+      gap: 16px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      left: 17mm;
+      padding: 16px 18px;
+      position: absolute;
+      right: 17mm;
+    }
+
+    .closing-strip h3 {
+      color: #ffffff;
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
+
+    .closing-strip p {
+      color: #cfe2ee;
+      font-size: 13px;
+    }
+
+    .closing-strip .badge {
+      background: #ffffff;
+      color: var(--primary-dark);
+    }
+
+    .footer-row {
+      bottom: 7mm;
+      color: var(--muted);
+      font-size: 10px;
+      left: 17mm;
+      position: absolute;
+      right: 17mm;
+    }
+
+    @media print {
+      body {
+        background: #ffffff;
+      }
+
+      .page {
+        box-shadow: none;
+        margin: 0;
+      }
+    }
+
+    @page {
+      margin: 0;
+      size: A4;
+    }
+  </style>
+</head>
+<body>
+  <section class="page">
+    <header class="brand-row">
+      <div class="brand">Ranglijst Deltavliegen <span class="badge">Competition scoring</span></div>
+      <div class="kicker">For competition organisers</div>
+    </header>
+
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="kicker">Less scoring administration, faster publishing</div>
+        <h1>Run the task. Let the website carry the scoring flow.</h1>
+        <p class="lede">A simple competition section gives pilots one clear upload route, gives scorers candidate tracklogs automatically, and publishes GAP 2025 results from the same workflow.</p>
+      </div>
+
+      <div class="browser">
+        <div class="browser-top">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="address">ranglijstdeltavliegen.nl/public/task_board.php?id=24</span>
+        </div>
+        <div class="browser-body">
+          <div class="site-header">
+            <div class="site-title">Ranglijst Deltavliegen</div>
+            <span class="badge">Shareable task board</span>
+          </div>
+          <div class="nav">
+            <span>Scores</span>
+            <span class="active">Task board</span>
+            <span>Track upload</span>
+          </div>
+          <div class="visual-section">
+            <div class="kicker">Klasse 1 - Open</div>
+            <h3>Task 3: Veluwe triangle</h3>
+            <p class="muted">Dutch Open Hang Gliding - Terlet</p>
+            <div class="stat-grid">
+              <div class="stat"><span>Date</span><strong>16 Jul</strong></div>
+              <div class="stat"><span>Type</span><strong>Race</strong></div>
+              <div class="stat"><span>Route</span><strong>74.2 km</strong></div>
+            </div>
+            <div class="task-area">
+              <div class="turnpoints">
+                <div class="turnpoint"><b>1</b><strong>TO Terlet</strong><span>400 m</span></div>
+                <div class="turnpoint"><b>2</b><strong>SSS Rheden</strong><span>1 km</span></div>
+                <div class="turnpoint"><b>3</b><strong>TP Radio Kootwijk</strong><span>400 m</span></div>
+                <div class="turnpoint"><b>4</b><strong>ESS Terlet</strong><span>1 km</span></div>
+              </div>
+              <div class="map">
+                <div class="route">
+                  <svg viewBox="0 0 230 190" aria-hidden="true">
+                    <path d="M28 150 C64 76, 96 40, 132 70 S202 118, 182 155" fill="none" stroke="#102436" stroke-width="5" stroke-linecap="round"/>
+                    <path d="M28 150 C64 76, 96 40, 132 70 S202 118, 182 155" fill="none" stroke="#0f6fa8" stroke-width="3" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <span class="marker" style="left: 18px; bottom: 22px;">1</span>
+                <span class="marker sss" style="left: 77px; top: 34px;">2</span>
+                <span class="marker" style="right: 62px; top: 67px;">3</span>
+                <span class="marker ess" style="right: 24px; bottom: 20px;">4</span>
+              </div>
+            </div>
+          </div>
+          <div class="visual-section">
+            <h3>Share with flight instruments</h3>
+            <div class="qr-layout">
+              <div>
+                <div class="button" style="max-width: 150px;">Download XCTSK</div>
+                <div class="code-box">XCTSK:v1:race:74.2km:TO_TERLET:SSS_RHEDEN:RADIOKOOTWIJK:ESS_TERLET:startgates=12:30,12:45,13:00</div>
+              </div>
+              <div class="qr" aria-hidden="true">
+                <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i>
+                <i class="on"></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i class="on"></i>
+                <i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i>
+                <i class="on"></i><i></i><i></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i></i><i></i><i class="on"></i>
+                <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i>
+                <i></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i>
+                <i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i>
+                <i></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i>
+                <i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i>
+                <i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i>
+                <i class="on"></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i>
+                <i class="on"></i><i></i><i></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i></i><i></i>
+                <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="benefit-strip">
+      <div class="benefit"><strong>One link for pilots</strong><p class="muted">Briefing, QR code, XCTSK download and upload route are easy to share.</p></div>
+      <div class="benefit"><strong>Fewer manual checks</strong><p class="muted">Tracklogs are recognised by task time window and location.</p></div>
+      <div class="benefit"><strong>Published standings</strong><p class="muted">Task scores and cumulative competition results go live from the scorer workflow.</p></div>
+    </div>
+
+    <footer class="footer-row">
+      <span>Example visuals are styled after the current website interface.</span>
+      <span>Page 1 of 2</span>
+    </footer>
+  </section>
+
+  <section class="page">
+    <header class="brand-row">
+      <div class="brand">Ranglijst Deltavliegen <span class="badge">Scoring workflow</span></div>
+      <div class="kicker">Built for practical competition days</div>
+    </header>
+
+    <div class="page-title">
+      <h2>From upload to results without the usual chasing.</h2>
+      <p>The competition section keeps the flow lightweight for pilots and structured for scorers, so organisers spend less time collecting files, naming spreadsheets and re-publishing corrected tables.</p>
+    </div>
+
+    <div class="workflow-grid">
+      <article class="mini-card">
+        <h3>Pilot track upload</h3>
+        <p>The public upload form stays intentionally small, so it works at the field and after retrieve.</p>
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="kicker">Competition scoring</div>
+            <h3>Track upload</h3>
+            <div class="field"><label>Name</label><div class="input">Sanne de Vries</div></div>
+            <div class="field"><label>Email</label><div class="input">sanne@example.nl</div></div>
+            <div class="field"><label>IGC tracklog</label><div class="input">task-3.igc</div></div>
+            <div class="button">Upload track</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="mini-card">
+        <h3>Candidate tracks found automatically</h3>
+        <p>Uploaded files are matched to tasks using the task time window and flying area, then the scorer can accept, adjust or exclude.</p>
+        <div class="candidate-card">
+          <div class="site-header">
+            <strong>Track review</strong>
+            <span class="match-pill">7 candidate tracks</span>
+          </div>
+          <table>
+            <thead>
+              <tr><th>Pilot</th><th>Track</th><th>Fix window</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Sanne de Vries</td><td>task-3.igc</td><td>12:27 - 15:18</td><td><span class="match-pill">Matched</span></td></tr>
+              <tr><td>Jonas Vermeer</td><td>jv-1607.igc</td><td>12:31 - 15:44</td><td><span class="match-pill">Matched</span></td></tr>
+              <tr><td>Mila Bakker</td><td>flight.igc</td><td>10:02 - 10:51</td><td class="muted">Outside window</td></tr>
+              <tr><td>Tom Janssen</td><td>terlet.igc</td><td>12:35 - 14:56</td><td><span class="match-pill">Matched</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="mini-card">
+        <h3>GAP 2025 scoring controls</h3>
+        <p>Scorers keep control of scoring options while the calculations stay reproducible in one place.</p>
+        <div class="candidate-card">
+          <div class="site-header">
+            <strong>Score and publish</strong>
+            <span class="published-pill">GAP 2025</span>
+          </div>
+          <div class="score-summary">
+            <div><span>Validity</span><strong>89.4%</strong></div>
+            <div><span>Best dist.</span><strong>74.2</strong></div>
+            <div><span>Pilots</span><strong>31</strong></div>
+            <div><span>Goal</span><strong>12</strong></div>
+          </div>
+          <table>
+            <thead>
+              <tr><th>#</th><th>Pilot</th><th>Distance</th><th>Time</th><th>Total</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>1</td><td>Sanne de Vries</td><td>74.2 km</td><td>1:58:41</td><td><strong>918.4</strong></td></tr>
+              <tr><td>2</td><td>Jonas Vermeer</td><td>74.2 km</td><td>2:04:19</td><td><strong>884.7</strong></td></tr>
+              <tr><td>3</td><td>Tom Janssen</td><td>69.1 km</td><td>-</td><td><strong>621.3</strong></td></tr>
+            </tbody>
+          </table>
+          <div class="button" style="max-width: 160px;">Publish results</div>
+        </div>
+      </article>
+
+      <article class="mini-card">
+        <h3>Public task and competition standings</h3>
+        <p>Published task results and cumulative standings are available immediately for pilots, staff and spectators.</p>
+        <div class="candidate-card">
+          <div class="kicker">Klasse 1 - Open</div>
+          <h3>Dutch Open Hang Gliding</h3>
+          <p class="muted" style="font-size: 12px; margin: 3px 0 10px;">Competition result through Task 3</p>
+          <table>
+            <thead>
+              <tr><th>#</th><th>Pilot</th><th>Task 1</th><th>Task 2</th><th>Task 3</th><th>Total</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>1</td><td>Sanne de Vries</td><td>812.5</td><td>774.1</td><td>918.4</td><td><strong>2505.0</strong></td></tr>
+              <tr><td>2</td><td>Jonas Vermeer</td><td>790.2</td><td>746.8</td><td>884.7</td><td><strong>2421.7</strong></td></tr>
+              <tr><td>3</td><td>Mila Bakker</td><td>768.4</td><td>801.6</td><td>575.0</td><td><strong>2145.0</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+
+    <div class="closing-strip">
+      <div>
+        <h3>A calmer scoring desk on a busy competition day.</h3>
+        <p>Task sharing, tracklog collection, candidate matching, scorer review, GAP 2025 scoring and publication all live in the same website section.</p>
+      </div>
+      <span class="badge">Ready for organiser demos</span>
+    </div>
+
+    <footer class="footer-row">
+      <span>Ranglijst Deltavliegen competition scoring section</span>
+      <span>Page 2 of 2</span>
+    </footer>
+  </section>
+</body>
+</html>
