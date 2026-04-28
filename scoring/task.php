@@ -19,15 +19,40 @@ if (!$task || !scoring_can_edit_competition($pdo, (int)$task['competition_id'], 
     exit;
 }
 $competition = scoring_load_competition($pdo, (int)$task['competition_id']);
+$taskTabs = [
+    'settings' => '1. taak instellen',
+    'review' => '2. tracks controleren',
+    'scoring' => '3. scoren en publiceren',
+];
+$requestedTab = is_string($_GET['tab'] ?? null) ? $_GET['tab'] : '';
+$activeTab = isset($taskTabs[$requestedTab]) ? $requestedTab : 'settings';
+$taskTabByAction = [
+    'update_task' => 'settings',
+    'add_gate' => 'settings',
+    'delete_gate' => 'settings',
+    'add_turnpoint' => 'settings',
+    'delete_turnpoint' => 'settings',
+    'update_turnpoints' => 'settings',
+    'match_tracks' => 'review',
+    'add_manual_flight' => 'review',
+    'save_review' => 'review',
+    'score_task' => 'scoring',
+    'publish_task' => 'scoring',
+    'unpublish_task' => 'scoring',
+];
 $notice = null;
 $error = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $postedAction = (string)($_POST['action'] ?? '');
+    if (isset($taskTabByAction[$postedAction])) {
+        $activeTab = $taskTabByAction[$postedAction];
+    }
     if (!app_check_csrf()) {
         $error = 'Ongeldige CSRF-token.';
     } else {
         try {
-            $action = (string)($_POST['action'] ?? '');
+            $action = $postedAction;
             if ($action === 'update_task') {
                 $name = trim((string)($_POST['name'] ?? ''));
                 $taskDate = trim((string)($_POST['task_date'] ?? ''));
@@ -78,7 +103,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($action === 'add_turnpoint') {
                 $waypointId = (int)($_POST['waypoint_id'] ?? 0);
                 $radius = max(1, (int)($_POST['radius_m'] ?? 400));
-                $role = (string)($_POST['role'] ?? 'normal');
                 if ($waypointId <= 0) {
                     throw new RuntimeException('Selecteer een waypoint.');
                 }
@@ -90,17 +114,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $pdo->prepare('SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM rankings_scoring_task_turnpoints WHERE task_id = ?');
                 $stmt->execute([$taskId]);
                 $sequence = (int)$stmt->fetchColumn();
-                if ($role === 'sss') {
-                    $pdo->prepare('UPDATE rankings_scoring_task_turnpoints SET is_speed_section_start = 0 WHERE task_id = ?')->execute([$taskId]);
-                }
-                if ($role === 'ess') {
-                    $pdo->prepare('UPDATE rankings_scoring_task_turnpoints SET is_speed_section_end = 0 WHERE task_id = ?')->execute([$taskId]);
-                }
                 $pdo->prepare(
                     'INSERT INTO rankings_scoring_task_turnpoints
                      (task_id, waypoint_id, sequence_no, radius_m, is_speed_section_start, is_speed_section_end)
                      VALUES (?, ?, ?, ?, ?, ?)'
-                )->execute([$taskId, $waypointId, $sequence, $radius, $role === 'sss' ? 1 : 0, $role === 'ess' ? 1 : 0]);
+                )->execute([$taskId, $waypointId, $sequence, $radius, 0, 0]);
                 $notice = 'Taakpunt toegevoegd.';
             } elseif ($action === 'delete_turnpoint') {
                 $turnpointId = (int)($_POST['turnpoint_id'] ?? 0);
@@ -145,56 +163,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $task = scoring_load_task($pdo, $taskId);
                 $matched = scoring_match_task_tracklogs($pdo, $task, $turnpoints);
                 $notice = $matched . ' tracklog(s) gekoppeld aan deze taak.';
-            } elseif ($action === 'upload_task_tracklog') {
-                $pilotName = trim((string)($_POST['track_pilot_name'] ?? ''));
-                $pilotEmail = scoring_normalize_email((string)($_POST['track_pilot_email'] ?? ''));
-                if (!isset($_FILES['task_tracklog']) || !is_array($_FILES['task_tracklog'])) {
-                    throw new RuntimeException('Upload een IGC-bestand.');
+            } elseif ($action === 'add_manual_flight') {
+                $manualType = (string)($_POST['manual_entry_type'] ?? 'tracklog');
+                $pilotName = trim((string)($_POST['manual_pilot_name'] ?? ''));
+                $pilotEmail = scoring_normalize_email((string)($_POST['manual_pilot_email'] ?? ''));
+                if ($manualType === 'tracklog') {
+                    if (!isset($_FILES['manual_tracklog']) || !is_array($_FILES['manual_tracklog'])) {
+                        throw new RuntimeException('Upload een IGC-bestand.');
+                    }
+                    $tracklogId = scoring_store_tracklog_upload($pdo, $_FILES['manual_tracklog'], $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
+                    $stmt = $pdo->prepare('SELECT pilot_name, pilot_email FROM rankings_scoring_tracklogs WHERE id = ? LIMIT 1');
+                    $stmt->execute([$tracklogId]);
+                    $tracklog = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if (!$tracklog) {
+                        throw new RuntimeException('Tracklog kon niet worden gekoppeld.');
+                    }
+                    $insert = $pdo->prepare(
+                        'INSERT INTO rankings_scoring_task_flights (task_id, tracklog_id, pilot_name, pilot_email)
+                         VALUES (?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE pilot_name = VALUES(pilot_name), pilot_email = VALUES(pilot_email), is_excluded = 0, exclude_reason = NULL'
+                    );
+                    $insert->execute([$taskId, $tracklogId, $tracklog['pilot_name'], $tracklog['pilot_email']]);
+                    if (scoring_pilot_identities_available($pdo)) {
+                        $lookup = $pdo->prepare('SELECT id FROM rankings_scoring_task_flights WHERE task_id = ? AND tracklog_id = ? LIMIT 1');
+                        $lookup->execute([$taskId, $tracklogId]);
+                        $flightId = (int)$lookup->fetchColumn();
+                        if ($flightId > 0) {
+                            scoring_assign_known_task_flight_identity($pdo, (int)$task['competition_id'], $flightId, (string)$tracklog['pilot_name'], $tracklog['pilot_email'] ?? null);
+                        }
+                    }
+                    $notice = 'Tracklog van ' . $tracklog['pilot_name'] . ' is toegevoegd aan deze taak.';
+                } elseif ($manualType === 'minimum_distance') {
+                    $task = scoring_load_task($pdo, $taskId);
+                    if (!$task) {
+                        throw new RuntimeException('Taak niet gevonden.');
+                    }
+                    $flightId = scoring_add_manual_minimum_flight($pdo, $task, $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
+                    if (scoring_pilot_identities_available($pdo) && $flightId > 0) {
+                        scoring_assign_known_task_flight_identity($pdo, (int)$task['competition_id'], $flightId, $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
+                    }
+                    $notice = 'Minimumafstand voor ' . $pilotName . ' is toegevoegd aan deze taak.';
+                } else {
+                    throw new RuntimeException('Kies tracklog uploaden of minimumafstand.');
                 }
-                $tracklogId = scoring_store_tracklog_upload($pdo, $_FILES['task_tracklog'], $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
-                $stmt = $pdo->prepare('SELECT pilot_name, pilot_email FROM rankings_scoring_tracklogs WHERE id = ? LIMIT 1');
-                $stmt->execute([$tracklogId]);
-                $tracklog = $stmt->fetch(PDO::FETCH_ASSOC);
-                if (!$tracklog) {
-                    throw new RuntimeException('Tracklog kon niet worden gekoppeld.');
-                }
-                $insert = $pdo->prepare(
-                    'INSERT INTO rankings_scoring_task_flights (task_id, tracklog_id, pilot_name, pilot_email)
-                     VALUES (?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE pilot_name = VALUES(pilot_name), pilot_email = VALUES(pilot_email), is_excluded = 0, exclude_reason = NULL'
-                );
-                $insert->execute([$taskId, $tracklogId, $tracklog['pilot_name'], $tracklog['pilot_email']]);
-                $notice = 'Tracklog van ' . $tracklog['pilot_name'] . ' is toegevoegd aan deze taak.';
-            } elseif ($action === 'add_manual_minimum_distance') {
-                $pilotName = trim((string)($_POST['minimum_pilot_name'] ?? ''));
-                $pilotEmail = scoring_normalize_email((string)($_POST['minimum_pilot_email'] ?? ''));
-                $task = scoring_load_task($pdo, $taskId);
-                if (!$task) {
-                    throw new RuntimeException('Taak niet gevonden.');
-                }
-                scoring_add_manual_minimum_flight($pdo, $task, $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
-                $notice = 'Minimumafstand voor ' . $pilotName . ' is toegevoegd aan deze taak.';
             } elseif ($action === 'save_review') {
-                $stmt = $pdo->prepare('SELECT id FROM rankings_scoring_task_flights WHERE task_id = ?');
+                $stmt = $pdo->prepare('SELECT id, pilot_name, pilot_email FROM rankings_scoring_task_flights WHERE task_id = ?');
                 $stmt->execute([$taskId]);
-                $flightIds = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+                $flightRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 $excluded = isset($_POST['exclude']) && is_array($_POST['exclude']) ? array_map('intval', array_keys($_POST['exclude'])) : [];
                 $reasons = isset($_POST['exclude_reason']) && is_array($_POST['exclude_reason']) ? $_POST['exclude_reason'] : [];
+                $identitySelections = isset($_POST['pilot_identity']) && is_array($_POST['pilot_identity']) ? $_POST['pilot_identity'] : [];
                 $upd = $pdo->prepare('UPDATE rankings_scoring_task_flights SET is_excluded = ?, exclude_reason = ? WHERE id = ? AND task_id = ?');
-                foreach ($flightIds as $flightId) {
+                foreach ($flightRows as $flightRow) {
+                    $flightId = (int)$flightRow['id'];
                     $isExcluded = in_array($flightId, $excluded, true) ? 1 : 0;
                     $reason = trim((string)($reasons[$flightId] ?? ''));
                     $upd->execute([$isExcluded, $reason !== '' ? $reason : null, $flightId, $taskId]);
+                    if (!$isExcluded && scoring_pilot_identities_available($pdo)) {
+                        $selection = (string)($identitySelections[$flightId] ?? '');
+                        if ($selection !== '') {
+                            scoring_assign_task_flight_identifier_selection($pdo, (int)$task['competition_id'], $flightId, $selection, (string)$flightRow['pilot_name'], $flightRow['pilot_email'] ?? null);
+                        }
+                    }
                 }
                 $notice = 'Review opgeslagen.';
             } elseif ($action === 'score_task') {
                 $summary = scoring_score_task($pdo, $taskId);
                 $notice = 'Taak gescoord: ' . (int)$summary['pilots_scored'] . ' piloten, taakvaliditeit ' . app_format_compact_number($summary['task_validity'] * 100, 1) . '%.';
+                if ($task['status'] === 'published') {
+                    $notice .= ' De publicatie blijft ongewijzigd tot je Publicatie bijwerken kiest.';
+                }
             } elseif ($action === 'publish_task') {
-                $pdo->prepare('UPDATE rankings_scoring_tasks SET status = ?, published_at = COALESCE(published_at, NOW()) WHERE id = ?')->execute(['published', $taskId]);
-                $pdo->prepare('UPDATE rankings_scoring_competitions SET is_public = 1 WHERE id = ?')->execute([(int)$task['competition_id']]);
-                $notice = 'Resultaten gepubliceerd.';
+                $publication = scoring_publish_task_results($pdo, $taskId);
+                $notice = 'Resultaten en tussenstand gepubliceerd: ' . (int)$publication['published_rows'] . ' piloten.';
             } elseif ($action === 'unpublish_task') {
+                scoring_clear_task_publication($pdo, $taskId);
                 $pdo->prepare('UPDATE rankings_scoring_tasks SET status = ?, published_at = NULL WHERE id = ?')->execute(['scored', $taskId]);
                 $notice = 'Publicatie ingetrokken.';
             }
@@ -209,21 +252,47 @@ $turnpoints = scoring_load_task_turnpoints($pdo, $taskId);
 $gates = scoring_load_task_gates($pdo, $taskId);
 $waypoints = [];
 $flights = [];
+$pilotIdentityAvailable = scoring_pilot_identities_available($pdo);
+$pilotIdentifierOptions = [];
 $results = [];
 try {
     $stmt = $pdo->prepare('SELECT * FROM rankings_scoring_waypoints WHERE competition_id = ? ORDER BY name ASC');
     $stmt->execute([(int)$task['competition_id']]);
     $waypoints = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $stmt = $pdo->prepare(
-        'SELECT f.*, tl.original_filename, tl.storage_path, tl.fix_count, tl.uploaded_at, tl.first_fix_at, tl.last_fix_at
-         FROM rankings_scoring_task_flights f
-         JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
-         WHERE f.task_id = ?
-         ORDER BY f.is_excluded ASC, f.pilot_name ASC'
-    );
+    $pilotIdentifierOptions = scoring_load_competition_pilot_identifier_options($pdo, $task);
+
+    if ($pilotIdentityAvailable) {
+        $stmt = $pdo->prepare(
+            'SELECT f.*, tl.original_filename, tl.storage_path, tl.fix_count, tl.uploaded_at, tl.first_fix_at, tl.last_fix_at,
+                    fi.identity_id, pi.display_name AS identity_display_name, pi.primary_email AS identity_primary_email
+             FROM rankings_scoring_task_flights f
+             JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
+             LEFT JOIN rankings_scoring_task_flight_identities fi ON fi.flight_id = f.id
+             LEFT JOIN rankings_scoring_pilot_identities pi ON pi.id = fi.identity_id
+             WHERE f.task_id = ?
+             ORDER BY f.is_excluded ASC, f.pilot_name ASC'
+        );
+    } else {
+        $stmt = $pdo->prepare(
+            'SELECT f.*, tl.original_filename, tl.storage_path, tl.fix_count, tl.uploaded_at, tl.first_fix_at, tl.last_fix_at
+             FROM rankings_scoring_task_flights f
+             JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
+             WHERE f.task_id = ?
+             ORDER BY f.is_excluded ASC, f.pilot_name ASC'
+        );
+    }
     $stmt->execute([$taskId]);
     $flights = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if ($pilotIdentityAvailable) {
+        foreach ($flights as &$flight) {
+            $identityId = (int)($flight['identity_id'] ?? 0);
+            $flight['suggested_identifier'] = $identityId > 0
+                ? 'identity:' . $identityId
+                : scoring_suggest_competition_pilot_identifier($pilotIdentifierOptions, (string)$flight['pilot_name'], $flight['pilot_email'] ?? null);
+        }
+        unset($flight);
+    }
 
     $stmt = $pdo->prepare(
         'SELECT *
@@ -243,24 +312,142 @@ if (!empty($task['scoring_summary_json'])) {
     $summary = is_array($decoded) ? $decoded : [];
 }
 
+$taskMap = !empty($turnpoints) ? scoring_task_map_data($turnpoints) : null;
+$taskMapJson = '';
+$leafletAssets = '';
+if ($taskMap) {
+    $taskMapJson = json_encode(
+        $taskMap,
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+    );
+    if ($taskMapJson === false) {
+        $taskMap = null;
+        $taskMapJson = '';
+    } else {
+        $leafletAssets = ''
+            . '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">' . "\n"
+            . '  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>';
+    }
+}
+
 app_page_start($task['name'] . ' - Scoring', [
     'active_scoring' => 'dashboard',
     'scoring_user' => $scorer['name'] ?: $scorer['email'],
+    'scoring_breadcrumbs' => [
+        ['label' => 'Competities', 'href' => 'index.php'],
+        ['label' => $task['competition_name'], 'href' => 'competition.php?id=' . (int)$task['competition_id']],
+        ['label' => $task['name']],
+    ],
     'description' => 'Taak beheren en scoren.',
+    'extra_head' => $leafletAssets,
 ]);
 ?>
 <main>
-  <section class="card">
-    <div class="section-header">
-      <div>
-        <div class="kicker"><?= h($task['competition_name']) ?></div>
-        <h1><?= h($task['name']) ?></h1>
-        <p class="muted"><?= h($task['task_date']) ?> - <?= h($task['task_type']) ?> - status <?= h($task['status']) ?></p>
+  <section class="competition-tabs" data-tabs data-active-tab="<?= h($activeTab) ?>">
+    <div class="site-nav public-nav tab-list task-section-nav">
+      <span class="task-nav-title"><?= h($task['name']) ?></span>
+      <div class="tab-button-list" role="tablist" aria-label="Taak onderdelen">
+        <?php foreach ($taskTabs as $tabKey => $tabLabel): ?>
+          <button
+            type="button"
+            class="tab-button<?= $activeTab === $tabKey ? ' is-active' : '' ?>"
+            id="task-tab-<?= h($tabKey) ?>"
+            role="tab"
+            aria-selected="<?= $activeTab === $tabKey ? 'true' : 'false' ?>"
+            aria-controls="task-panel-<?= h($tabKey) ?>"
+            data-tab-target="<?= h($tabKey) ?>"
+            tabindex="<?= $activeTab === $tabKey ? '0' : '-1' ?>"
+          ><?= h($tabLabel) ?></button>
+        <?php endforeach; ?>
       </div>
-      <a class="btn secondary" href="competition.php?id=<?= (int)$task['competition_id'] ?>">Competitie</a>
     </div>
     <?php if ($notice): ?><div class="alert success"><?= h($notice) ?></div><?php endif; ?>
     <?php if ($error): ?><div class="alert error"><?= h($error) ?></div><?php endif; ?>
+
+    <div
+      class="tab-panel"
+      id="task-panel-settings"
+      role="tabpanel"
+      aria-labelledby="task-tab-settings"
+      data-tab-panel="settings"
+      <?= $activeTab !== 'settings' ? 'hidden' : '' ?>
+    >
+
+  <section class="card">
+    <h2>Taakpunten</h2>
+    <div class="public-task-layout scoring-task-layout">
+      <div class="public-task-turnpoints scoring-task-turnpoints">
+        <?php if (empty($turnpoints)): ?>
+          <p class="muted">Nog geen taakpunten. Zonder expliciete SSS/ESS gebruikt de scorer straks de eerste en laatste taakpunten.</p>
+        <?php else: ?>
+          <form id="turnpoints-form" method="post">
+            <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+            <input type="hidden" name="action" value="update_turnpoints">
+          </form>
+          <ol class="task-turnpoint-list task-turnpoint-edit-list">
+            <?php foreach ($turnpoints as $tp): ?>
+              <li>
+                <span class="task-turnpoint-name"><?= h($tp['name']) ?></span>
+                <div class="task-turnpoint-controls">
+                  <label>Radius
+                    <input form="turnpoints-form" type="number" name="radius[<?= (int)$tp['id'] ?>]" min="1" value="<?= (int)$tp['radius_m'] ?>">
+                  </label>
+                  <label><input form="turnpoints-form" type="radio" name="sss_turnpoint_id" value="<?= (int)$tp['id'] ?>" <?= (int)$tp['is_speed_section_start'] === 1 ? 'checked' : '' ?>> SSS</label>
+                  <label><input form="turnpoints-form" type="radio" name="ess_turnpoint_id" value="<?= (int)$tp['id'] ?>" <?= (int)$tp['is_speed_section_end'] === 1 ? 'checked' : '' ?>> ESS</label>
+                  <button form="turnpoints-form" class="danger" name="delete_turnpoint_id" value="<?= (int)$tp['id'] ?>" type="submit">Verwijderen</button>
+                </div>
+              </li>
+            <?php endforeach; ?>
+          </ol>
+        <?php endif; ?>
+
+        <form method="post" class="panel grid taskpoint-form taskpoint-add-form">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="add_turnpoint">
+          <label>Waypoint
+            <select name="waypoint_id" required>
+              <option value="">Kies waypoint</option>
+              <?php foreach ($waypoints as $wp): ?>
+                <option value="<?= (int)$wp['id'] ?>"><?= h($wp['name']) ?><?= $wp['code'] ? ' (' . h($wp['code']) . ')' : '' ?></option>
+              <?php endforeach; ?>
+            </select>
+          </label>
+          <label>Radius (m)
+            <input type="number" name="radius_m" min="1" value="400">
+          </label>
+          <p><button type="submit">Taakpunt toevoegen</button></p>
+        </form>
+
+        <?php if (!empty($turnpoints)): ?>
+          <p class="task-turnpoint-actions"><button form="turnpoints-form" type="submit">Taakpunten opslaan</button></p>
+          <?php
+            $routeDistance = scoring_task_distance_km($turnpoints);
+            $speedCenterDistance = scoring_speed_section_center_distance_km($turnpoints);
+            $speedBoundaryDistance = scoring_speed_section_boundary_distance_km($turnpoints);
+          ?>
+          <p class="muted">
+            Speedsectie: <?= h(app_format_compact_number($speedBoundaryDistance, 3)) ?> km
+            <span>(middenpunten <?= h(app_format_compact_number($speedCenterDistance, 3)) ?> km)</span>.
+            Route totaal: <?= h(app_format_compact_number($routeDistance, 3)) ?> km.
+          </p>
+        <?php endif; ?>
+      </div>
+      <div class="public-task-map">
+        <div class="task-map">
+          <div class="task-map-canvas" aria-label="Kaart met taakpunten en geoptimaliseerde route">
+            <span class="track-preview-loading"><?= $taskMap ? 'Kaart laden...' : 'Geen taakpunten voor de kaart.' ?></span>
+          </div>
+          <?php if ($taskMap): ?>
+            <div class="task-map-legend">
+              <span><i class="task-map-swatch normal"></i>Normaal</span>
+              <span><i class="task-map-swatch sss"></i>SSS</span>
+              <span><i class="task-map-swatch ess"></i>ESS</span>
+            </div>
+            <script type="application/json" class="task-map-data"><?= $taskMapJson ?></script>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section class="card">
@@ -309,107 +496,42 @@ app_page_start($task['name'] . ' - Scoring', [
     </form>
   </section>
 
-  <section class="card">
-    <h2>Startgates</h2>
-    <?php if ($task['task_type'] !== 'race'): ?>
-      <p class="muted">Time trial gebruikt de individuele start bij SSS.</p>
-    <?php endif; ?>
-    <form method="post" class="inline">
-      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-      <input type="hidden" name="action" value="add_gate">
-      <label>Tijd
-        <input type="time" name="gate_time" required>
-      </label>
-      <button type="submit">Toevoegen</button>
-    </form>
-    <?php if (!empty($gates)): ?>
-      <div class="chip-list">
-        <?php foreach ($gates as $gate): ?>
-          <form method="post" class="chip-form">
-            <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-            <input type="hidden" name="action" value="delete_gate">
-            <input type="hidden" name="gate_id" value="<?= (int)$gate['id'] ?>">
-            <span><?= h(scoring_utc_sql_to_local_time($gate['gate_time_at'])) ?></span>
-            <button class="link-button" type="submit">x</button>
-          </form>
-        <?php endforeach; ?>
-      </div>
-    <?php endif; ?>
-  </section>
-
-  <section class="card">
-    <h2>Taakpunten</h2>
-    <form method="post" class="grid taskpoint-form">
-      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-      <input type="hidden" name="action" value="add_turnpoint">
-      <label>Waypoint
-        <select name="waypoint_id" required>
-          <option value="">Kies waypoint</option>
-          <?php foreach ($waypoints as $wp): ?>
-            <option value="<?= (int)$wp['id'] ?>"><?= h($wp['name']) ?><?= $wp['code'] ? ' (' . h($wp['code']) . ')' : '' ?></option>
-          <?php endforeach; ?>
-        </select>
-      </label>
-      <label>Radius (m)
-        <input type="number" name="radius_m" min="1" value="400">
-      </label>
-      <label>Rol
-        <select name="role">
-          <option value="normal">Normaal</option>
-          <option value="sss">Start speed section</option>
-          <option value="ess">End speed section</option>
-        </select>
-      </label>
-      <p><button type="submit">Taakpunt toevoegen</button></p>
-    </form>
-
-    <?php if (empty($turnpoints)): ?>
-      <p class="muted">Nog geen taakpunten. Zonder expliciete SSS/ESS gebruikt de scorer straks de eerste en laatste taakpunten.</p>
-    <?php else: ?>
-      <form method="post">
+  <?php if ($task['task_type'] === 'race'): ?>
+    <section class="card">
+      <h2>Startgates</h2>
+      <form method="post" class="inline">
         <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-        <input type="hidden" name="action" value="update_turnpoints">
-        <div class="table-responsive">
-          <table class="striped compact-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Waypoint</th>
-                <th>Radius</th>
-                <th>SSS</th>
-                <th>ESS</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($turnpoints as $tp): ?>
-                <tr>
-                  <td><?= (int)$tp['sequence_no'] ?></td>
-                  <td><?= h($tp['name']) ?></td>
-                  <td><input type="number" name="radius[<?= (int)$tp['id'] ?>]" min="1" value="<?= (int)$tp['radius_m'] ?>"></td>
-                  <td><input type="radio" name="sss_turnpoint_id" value="<?= (int)$tp['id'] ?>" <?= (int)$tp['is_speed_section_start'] === 1 ? 'checked' : '' ?>></td>
-                  <td><input type="radio" name="ess_turnpoint_id" value="<?= (int)$tp['id'] ?>" <?= (int)$tp['is_speed_section_end'] === 1 ? 'checked' : '' ?>></td>
-                  <td><button class="danger" name="delete_turnpoint_id" value="<?= (int)$tp['id'] ?>" type="submit">Verwijderen</button></td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-        <p><button type="submit">Taakpunten opslaan</button></p>
+        <input type="hidden" name="action" value="add_gate">
+        <label>Tijd
+          <input type="time" name="gate_time" required>
+        </label>
+        <button type="submit">Toevoegen</button>
       </form>
-      <?php
-        $routeDistance = scoring_task_distance_km($turnpoints);
-        $speedCenterDistance = scoring_speed_section_center_distance_km($turnpoints);
-        $speedBoundaryDistance = scoring_speed_section_boundary_distance_km($turnpoints);
-      ?>
-      <p class="muted">
-        Speedsectie: <?= h(app_format_compact_number($speedBoundaryDistance, 3)) ?> km
-        <span>(middenpunten <?= h(app_format_compact_number($speedCenterDistance, 3)) ?> km)</span>.
-        Route totaal: <?= h(app_format_compact_number($routeDistance, 3)) ?> km.
-      </p>
-    <?php endif; ?>
-  </section>
+      <?php if (!empty($gates)): ?>
+        <div class="chip-list">
+          <?php foreach ($gates as $gate): ?>
+            <form method="post" class="chip-form">
+              <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+              <input type="hidden" name="action" value="delete_gate">
+              <input type="hidden" name="gate_id" value="<?= (int)$gate['id'] ?>">
+              <span><?= h(scoring_utc_sql_to_local_time($gate['gate_time_at'])) ?></span>
+              <button class="link-button" type="submit">x</button>
+            </form>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
+    </section>
+  <?php endif; ?>
+    </div>
 
+    <div
+      class="tab-panel"
+      id="task-panel-review"
+      role="tabpanel"
+      aria-labelledby="task-tab-review"
+      data-tab-panel="review"
+      <?= $activeTab !== 'review' ? 'hidden' : '' ?>
+    >
   <section class="card">
     <div class="section-header">
       <div>
@@ -423,48 +545,7 @@ app_page_start($task['name'] . ' - Scoring', [
       </form>
     </div>
 
-    <div class="panel">
-      <h3>Tracklog handmatig toevoegen</h3>
-      <form method="post" enctype="multipart/form-data">
-        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-        <input type="hidden" name="action" value="upload_task_tracklog">
-        <div class="grid">
-          <label>Piloot
-            <input type="text" name="track_pilot_name" required maxlength="160">
-          </label>
-          <label>E-mail (optioneel)
-            <input type="email" name="track_pilot_email" maxlength="190">
-          </label>
-          <label>IGC-tracklog
-            <input type="file" name="task_tracklog" accept=".igc,text/plain" required>
-          </label>
-        </div>
-        <p><button type="submit">Tracklog toevoegen</button></p>
-      </form>
-      <p class="muted">Deze upload wordt direct aan deze taak gekoppeld, ook als tijdvenster of gebied niet automatisch matcht.</p>
-    </div>
-
-    <div class="panel">
-      <h3>Minimumafstand zonder tracklog</h3>
-      <form method="post">
-        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-        <input type="hidden" name="action" value="add_manual_minimum_distance">
-        <div class="grid">
-          <label>Piloot
-            <input type="text" name="minimum_pilot_name" required maxlength="160">
-          </label>
-          <label>E-mail (optioneel)
-            <input type="email" name="minimum_pilot_email" maxlength="190">
-          </label>
-          <label>Afstand
-            <input type="text" value="<?= h(app_format_compact_number($task['minimum_distance_km'], 3)) ?> km" readonly>
-          </label>
-        </div>
-        <p><button type="submit">Minimumafstand toevoegen</button></p>
-      </form>
-      <p class="muted">Gebruik dit voor een piloot zonder bruikbare tracklog. De piloot krijgt alleen de taak-minimumafstand en geen tijd-, goal- of leadingpunten.</p>
-    </div>
-
+    <h3>Beschikbare tracks</h3>
     <?php if (empty($flights)): ?>
       <p class="muted">Nog geen gekoppelde tracklogs.</p>
     <?php else: ?>
@@ -476,6 +557,7 @@ app_page_start($task['name'] . ' - Scoring', [
             <thead>
               <tr>
                 <th>Piloot</th>
+                <?php if ($pilotIdentityAvailable): ?><th>Identifier</th><?php endif; ?>
                 <th>Track</th>
                 <th>Fixes</th>
                 <th>Uitsluiten</th>
@@ -487,6 +569,17 @@ app_page_start($task['name'] . ' - Scoring', [
                 <?php $isManualMinimum = scoring_is_manual_minimum_tracklog($flight); ?>
                 <tr>
                   <td><?= h($flight['pilot_name']) ?><br><span class="muted"><?= h(scoring_display_pilot_email($flight['pilot_email'])) ?></span></td>
+                  <?php if ($pilotIdentityAvailable): ?>
+                    <?php $selectedIdentifier = (string)($flight['suggested_identifier'] ?? 'new'); ?>
+                    <td>
+                      <select name="pilot_identity[<?= (int)$flight['id'] ?>]">
+                        <?php foreach ($pilotIdentifierOptions as $identifierOption): ?>
+                          <option value="<?= h($identifierOption['value']) ?>" <?= $selectedIdentifier === (string)$identifierOption['value'] ? 'selected' : '' ?>><?= h($identifierOption['label']) ?></option>
+                        <?php endforeach; ?>
+                        <option value="new" <?= $selectedIdentifier === 'new' ? 'selected' : '' ?>>Nieuwe identifier: <?= h($flight['pilot_name']) ?></option>
+                      </select>
+                    </td>
+                  <?php endif; ?>
                   <td>
                     <?= $isManualMinimum ? 'Minimumafstand' : h($flight['original_filename']) ?>
                     <br><span class="muted"><?= $isManualMinimum ? 'handmatig zonder tracklog' : h(scoring_utc_sql_to_display($flight['uploaded_at'])) ?></span>
@@ -504,8 +597,45 @@ app_page_start($task['name'] . ' - Scoring', [
         <p><button type="submit">Review opslaan</button></p>
       </form>
     <?php endif; ?>
-  </section>
 
+    <div class="panel manual-flight-form">
+      <h3>Handmatig toevoegen</h3>
+      <form method="post" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+        <input type="hidden" name="action" value="add_manual_flight">
+        <div class="checkbox-grid">
+          <label><input type="radio" name="manual_entry_type" value="tracklog" checked> Tracklog uploaden</label>
+          <label><input type="radio" name="manual_entry_type" value="minimum_distance"> Minimumafstand</label>
+        </div>
+        <div class="grid">
+          <label>Piloot
+            <input type="text" name="manual_pilot_name" required maxlength="160">
+          </label>
+          <label>E-mail (optioneel)
+            <input type="email" name="manual_pilot_email" maxlength="190">
+          </label>
+          <label>IGC-tracklog
+            <input type="file" name="manual_tracklog" accept=".igc,text/plain">
+          </label>
+          <label>Minimumafstand
+            <input type="text" value="<?= h(app_format_compact_number($task['minimum_distance_km'], 3)) ?> km" readonly>
+          </label>
+        </div>
+        <p><button type="submit">Handmatig toevoegen</button></p>
+      </form>
+      <p class="muted">Upload een IGC-tracklog of voeg minimumafstand toe voor een piloot zonder bruikbare tracklog.</p>
+    </div>
+  </section>
+    </div>
+
+    <div
+      class="tab-panel"
+      id="task-panel-scoring"
+      role="tabpanel"
+      aria-labelledby="task-tab-scoring"
+      data-tab-panel="scoring"
+      <?= $activeTab !== 'scoring' ? 'hidden' : '' ?>
+    >
   <section class="card">
     <div class="section-header">
       <div>
@@ -533,17 +663,16 @@ app_page_start($task['name'] . ' - Scoring', [
           <input type="hidden" name="action" value="score_task">
           <button type="submit">Score taak</button>
         </form>
+        <form method="post">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="publish_task">
+          <button class="secondary" type="submit"><?= $task['status'] === 'published' ? 'Publicatie bijwerken' : 'Publiceren' ?></button>
+        </form>
         <?php if ($task['status'] === 'published'): ?>
           <form method="post">
             <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
             <input type="hidden" name="action" value="unpublish_task">
             <button class="secondary" type="submit">Publicatie intrekken</button>
-          </form>
-        <?php else: ?>
-          <form method="post">
-            <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-            <input type="hidden" name="action" value="publish_task">
-            <button class="secondary" type="submit">Publiceren</button>
           </form>
         <?php endif; ?>
       </div>
@@ -589,9 +718,14 @@ app_page_start($task['name'] . ' - Scoring', [
         </table>
       </div>
       <?php if ($task['status'] === 'published'): ?>
-        <p><a class="btn secondary" href="../public/scoring_task.php?id=<?= (int)$task['id'] ?>">Bekijk publieke resultaten</a></p>
+        <p class="actions">
+          <a class="btn secondary" href="../public/scoring_task.php?id=<?= (int)$task['id'] ?>">Bekijk publieke taakresultaten</a>
+          <a class="btn secondary" href="../public/scoring_competition.php?task_id=<?= (int)$task['id'] ?>">Bekijk publieke tussenstand</a>
+        </p>
       <?php endif; ?>
     <?php endif; ?>
+  </section>
+    </div>
   </section>
 </main>
 <?php app_page_end('Scoring - ' . app_site_name()); ?>

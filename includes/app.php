@@ -173,12 +173,54 @@ function app_admin_nav(string $active = ''): void {
     echo '</nav>';
 }
 
-function app_scoring_nav(string $active = '', string $userLabel = ''): void {
+function app_scoring_breadcrumbs(array $breadcrumbs): void {
+    if (empty($breadcrumbs)) {
+        return;
+    }
+
+    $items = [];
+    foreach ($breadcrumbs as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $label = trim((string)($item['label'] ?? ''));
+        if ($label === '') {
+            continue;
+        }
+        $items[] = [
+            'label' => $label,
+            'href' => trim((string)($item['href'] ?? $item['url'] ?? '')),
+        ];
+    }
+    if (empty($items)) {
+        return;
+    }
+
+    echo '<ol class="scoring-crumbs" aria-label="Kruimelpad">';
+    $lastIndex = count($items) - 1;
+    foreach ($items as $index => $item) {
+        $label = $item['label'];
+        $href = $item['href'];
+        $isCurrent = $index === $lastIndex || $href === '';
+        echo '<li>';
+        if ($isCurrent) {
+            echo '<span aria-current="page">' . h($label) . '</span>';
+        } else {
+            echo '<a href="' . h($href) . '">' . h($label) . '</a>';
+        }
+        echo '</li>';
+    }
+    echo '</ol>';
+}
+
+function app_scoring_nav(string $active = '', string $userLabel = '', array $breadcrumbs = []): void {
     $items = [
-        'dashboard' => ['Dashboard', 'index.php'],
+        'dashboard' => ['Competities', 'index.php'],
+        'tracklogs' => ['Tracklogs', 'tracklogs.php'],
         'logout' => ['Uitloggen', 'logout.php'],
     ];
     echo '<nav class="site-nav scoring-nav" aria-label="Scoring navigatie">';
+    echo '<span class="scoring-nav-title">Scorer Dashboard</span>';
     foreach ($items as $key => $item) {
         if ($key === 'logout' && $userLabel !== '') {
             echo '<span class="nav-status">Ingelogd als ' . h($userLabel) . '</span>';
@@ -193,6 +235,7 @@ function app_page_start(string $title, array $options = []): void {
     $activeAdmin = $options['active_admin'] ?? '';
     $activeScoring = $options['active_scoring'] ?? '';
     $scoringUser = $options['scoring_user'] ?? '';
+    $scoringBreadcrumbs = isset($options['scoring_breadcrumbs']) && is_array($options['scoring_breadcrumbs']) ? $options['scoring_breadcrumbs'] : [];
     $description = $options['description'] ?? app_site_name();
     $bodyClass = trim('container ' . ($options['body_class'] ?? ''));
     $extraHead = $options['extra_head'] ?? '';
@@ -231,7 +274,8 @@ function app_page_start(string $title, array $options = []): void {
         app_admin_nav($activeAdmin);
     }
     if ($showScoringNav) {
-        app_scoring_nav($activeScoring, $scoringUser);
+        app_scoring_nav($activeScoring, $scoringUser, $scoringBreadcrumbs);
+        app_scoring_breadcrumbs($scoringBreadcrumbs);
     }
 }
 

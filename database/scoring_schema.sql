@@ -90,6 +90,44 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_waypoints (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS rankings_scoring_pilot_identities (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  competition_id INT UNSIGNED NOT NULL,
+  display_name VARCHAR(160) NOT NULL,
+  primary_email VARCHAR(190) DEFAULT NULL,
+  notes VARCHAR(255) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_rankings_scoring_pilot_identities_competition (competition_id),
+  KEY idx_rankings_scoring_pilot_identities_email (primary_email),
+  CONSTRAINT fk_rankings_scoring_pilot_identities_competition
+    FOREIGN KEY (competition_id) REFERENCES rankings_scoring_competitions(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS rankings_scoring_pilot_identity_aliases (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  competition_id INT UNSIGNED NOT NULL,
+  identity_id INT UNSIGNED NOT NULL,
+  pilot_name VARCHAR(160) NOT NULL,
+  pilot_email VARCHAR(190) DEFAULT NULL,
+  normalized_name VARCHAR(160) NOT NULL,
+  normalized_email VARCHAR(190) NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_rankings_scoring_pilot_identity_alias (competition_id, normalized_name, normalized_email),
+  KEY idx_rankings_scoring_pilot_identity_aliases_identity (identity_id),
+  KEY idx_rankings_scoring_pilot_identity_aliases_email (competition_id, normalized_email),
+  CONSTRAINT fk_rankings_scoring_pilot_identity_aliases_competition
+    FOREIGN KEY (competition_id) REFERENCES rankings_scoring_competitions(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_rankings_scoring_pilot_identity_aliases_identity
+    FOREIGN KEY (identity_id) REFERENCES rankings_scoring_pilot_identities(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS rankings_scoring_tasks (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   competition_id INT UNSIGNED NOT NULL,
@@ -210,5 +248,68 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_task_flights (
     ON DELETE CASCADE,
   CONSTRAINT fk_rankings_scoring_task_flights_tracklog
     FOREIGN KEY (tracklog_id) REFERENCES rankings_scoring_tracklogs(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS rankings_scoring_task_publications (
+  task_id INT UNSIGNED NOT NULL,
+  task_distance_km DECIMAL(8,3) DEFAULT NULL,
+  scoring_summary_json MEDIUMTEXT DEFAULT NULL,
+  published_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (task_id),
+  KEY idx_rankings_scoring_task_publications_published (published_at),
+  CONSTRAINT fk_rankings_scoring_task_publications_task
+    FOREIGN KEY (task_id) REFERENCES rankings_scoring_tasks(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS rankings_scoring_task_public_results (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  task_id INT UNSIGNED NOT NULL,
+  source_flight_id INT UNSIGNED NOT NULL,
+  pilot_name VARCHAR(160) NOT NULL,
+  pilot_email VARCHAR(190) DEFAULT NULL,
+  pilot_identity_id INT UNSIGNED DEFAULT NULL,
+  distance_km DECIMAL(9,3) DEFAULT NULL,
+  start_time_at DATETIME DEFAULT NULL,
+  ess_time_at DATETIME DEFAULT NULL,
+  goal_time_at DATETIME DEFAULT NULL,
+  time_seconds INT UNSIGNED DEFAULT NULL,
+  reached_ess TINYINT(1) NOT NULL DEFAULT 0,
+  reached_goal TINYINT(1) NOT NULL DEFAULT 0,
+  distance_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+  time_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+  departure_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+  leading_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+  arrival_position_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+  arrival_time_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+  total_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+  rank_no INT UNSIGNED DEFAULT NULL,
+  evaluation_json MEDIUMTEXT DEFAULT NULL,
+  scored_at DATETIME DEFAULT NULL,
+  published_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_rankings_scoring_task_public_results_flight (task_id, source_flight_id),
+  KEY idx_rankings_scoring_task_public_results_task (task_id),
+  KEY idx_rankings_scoring_task_public_results_identity (pilot_identity_id),
+  CONSTRAINT fk_rankings_scoring_task_public_results_task
+    FOREIGN KEY (task_id) REFERENCES rankings_scoring_tasks(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS rankings_scoring_task_flight_identities (
+  flight_id INT UNSIGNED NOT NULL,
+  identity_id INT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (flight_id),
+  KEY idx_rankings_scoring_task_flight_identities_identity (identity_id),
+  CONSTRAINT fk_rankings_scoring_task_flight_identities_flight
+    FOREIGN KEY (flight_id) REFERENCES rankings_scoring_task_flights(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_rankings_scoring_task_flight_identities_identity
+    FOREIGN KEY (identity_id) REFERENCES rankings_scoring_pilot_identities(id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

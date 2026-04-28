@@ -9,10 +9,11 @@ $competitions = [];
 try {
     $stmt = $pdo->query(
         "SELECT c.id, c.name, c.class, c.scope, c.location, c.status, c.is_public, c.created_at,
-                COUNT(t.id) AS published_task_count,
-                MAX(t.published_at) AS last_published_at
+                COUNT(p.task_id) AS published_task_count,
+                MAX(p.published_at) AS last_published_at
          FROM rankings_scoring_competitions c
          JOIN rankings_scoring_tasks t ON t.competition_id = c.id AND t.status = 'published'
+         JOIN rankings_scoring_task_publications p ON p.task_id = t.id
          WHERE c.is_public = 1
          GROUP BY c.id, c.name, c.class, c.scope, c.location, c.status, c.is_public, c.created_at
          ORDER BY last_published_at DESC, c.created_at DESC"
@@ -43,9 +44,7 @@ app_page_start(app_site_name() . ' - Scoring', [
       <div class="tiles">
         <?php foreach ($competitions as $competition): ?>
           <?php
-            $stmt = $pdo->prepare("SELECT id, name, task_date, published_at FROM rankings_scoring_tasks WHERE competition_id = ? AND status = 'published' ORDER BY task_date ASC, id ASC");
-            $stmt->execute([(int)$competition['id']]);
-            $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $tasks = scoring_load_public_competition_tasks($pdo, (int)$competition['id']);
           ?>
           <article class="card tile">
             <div class="kicker"><?= h($competition['class']) ?> - <?= h($competition['scope']) ?></div>
@@ -54,7 +53,12 @@ app_page_start(app_site_name() . ' - Scoring', [
             <ul class="list-compact">
               <?php foreach ($tasks as $task): ?>
                 <li>
-                  <span><?= h($task['task_date']) ?> - <a href="scoring_task.php?id=<?= (int)$task['id'] ?>"><?= h($task['name']) ?></a></span>
+                  <span>
+                    <?= h($task['task_date']) ?> -
+                    <a href="scoring_task.php?id=<?= (int)$task['id'] ?>"><?= h($task['name']) ?></a>
+                    <span class="muted">/</span>
+                    <a href="scoring_competition.php?task_id=<?= (int)$task['id'] ?>">Competitieresultaat t/m <?= h($task['name']) ?></a>
+                  </span>
                   <span class="muted"><?= h(scoring_utc_sql_to_display($task['published_at'])) ?></span>
                 </li>
               <?php endforeach; ?>

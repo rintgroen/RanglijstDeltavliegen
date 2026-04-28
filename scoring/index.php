@@ -100,6 +100,9 @@ try {
 app_page_start('Scoring dashboard - ' . app_site_name(), [
     'active_scoring' => 'dashboard',
     'scoring_user' => $scorer['name'] ?: $scorer['email'],
+    'scoring_breadcrumbs' => [
+        ['label' => 'Competities'],
+    ],
     'description' => 'Scoring dashboard voor scorers.',
 ]);
 ?>
@@ -108,43 +111,7 @@ app_page_start('Scoring dashboard - ' . app_site_name(), [
   <?php if ($error): ?><div class="alert error"><?= h($error) ?></div><?php endif; ?>
 
   <section class="card">
-    <h1>Nieuwe competitie</h1>
-    <form method="post" enctype="multipart/form-data">
-      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-      <div class="grid">
-        <label>Naam
-          <input type="text" name="name" required maxlength="190" placeholder="bv. Voorjaarsclubwedstrijd">
-        </label>
-        <label>Klasse
-          <select name="class">
-            <option value="Klasse 1">Klasse 1</option>
-            <option value="Sportklasse">Sportklasse</option>
-            <option value="Open">Open</option>
-          </select>
-        </label>
-        <label>Type
-          <select name="scope">
-            <option value="open">Open competitie</option>
-            <option value="club">Clubcompetitie</option>
-            <option value="dutch_national_candidate">NK kandidaat</option>
-          </select>
-        </label>
-        <label>Locatie (optioneel)
-          <input type="text" name="location" maxlength="190">
-        </label>
-      </div>
-      <label>Waypointsbestand
-        <input type="file" name="waypoints" accept=".wpt,.gpx,.cup,.csv,.txt,text/plain,text/csv,application/gpx+xml,application/xml" required>
-      </label>
-      <p class="muted">
-        Ondersteund: GPX, SeeYou CUP/CSV met kolommen voor naam, lat en lon, OziExplorer WPT en CompeGPS/FS WPT met WGS84 lat/lon of UTM waypoints.
-      </p>
-      <p><button type="submit">Competitie aanmaken</button></p>
-    </form>
-  </section>
-
-  <section class="card">
-    <h2>Mijn competities</h2>
+    <h1>Mijn competities</h1>
     <?php if (empty($competitions)): ?>
       <p class="muted">Nog geen competities aangemaakt.</p>
     <?php else: ?>
@@ -177,6 +144,42 @@ app_page_start('Scoring dashboard - ' . app_site_name(), [
         </table>
       </div>
     <?php endif; ?>
+  </section>
+
+  <section class="card">
+    <h2>Nieuwe competitie</h2>
+    <form method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+      <div class="grid">
+        <label>Naam
+          <input type="text" name="name" required maxlength="190" placeholder="bv. Voorjaarsclubwedstrijd">
+        </label>
+        <label>Klasse
+          <select name="class">
+            <option value="Klasse 1">Klasse 1</option>
+            <option value="Sportklasse">Sportklasse</option>
+            <option value="Open">Open</option>
+          </select>
+        </label>
+        <label>Type
+          <select name="scope">
+            <option value="open">Open competitie</option>
+            <option value="club">Clubcompetitie</option>
+            <option value="dutch_national_candidate">NK kandidaat</option>
+          </select>
+        </label>
+        <label>Locatie (optioneel)
+          <input type="text" name="location" maxlength="190">
+        </label>
+      </div>
+      <label>Waypointsbestand
+        <input type="file" name="waypoints" accept=".wpt,.gpx,.cup,.csv,.txt,text/plain,text/csv,application/gpx+xml,application/xml" required>
+      </label>
+      <p class="muted">
+        Ondersteund: GPX, SeeYou CUP/CSV met kolommen voor naam, lat en lon, OziExplorer WPT en CompeGPS/FS WPT met WGS84 lat/lon of UTM waypoints.
+      </p>
+      <p><button type="submit">Competitie aanmaken</button></p>
+    </form>
   </section>
 </main>
 <?php app_page_end('Scoring - ' . app_site_name()); ?>

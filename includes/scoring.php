@@ -345,6 +345,387 @@ function scoring_display_pilot_email(?string $email): string {
     return scoring_is_placeholder_email($email) ? 'geen e-mail' : (string)$email;
 }
 
+function scoring_pilot_identities_available(PDO $pdo): bool {
+    static $available = null;
+    if ($available !== null) {
+        return $available;
+    }
+    try {
+        $pdo->query('SELECT 1 FROM rankings_scoring_pilot_identities LIMIT 1');
+        $pdo->query('SELECT 1 FROM rankings_scoring_pilot_identity_aliases LIMIT 1');
+        $pdo->query('SELECT 1 FROM rankings_scoring_task_flight_identities LIMIT 1');
+        $available = true;
+    } catch (Throwable $e) {
+        $available = false;
+    }
+    return $available;
+}
+
+function scoring_pilot_identity_normalized_name(string $name): string {
+    $name = trim(preg_replace('/\s+/', ' ', $name));
+    return function_exists('mb_strtolower') ? mb_strtolower($name, 'UTF-8') : strtolower($name);
+}
+
+function scoring_pilot_identity_normalized_email(?string $email): string {
+    $email = scoring_normalize_email((string)$email);
+    return ($email !== '' && !scoring_is_placeholder_email($email)) ? $email : '';
+}
+
+function scoring_load_competition_pilot_identities(PDO $pdo, int $competitionId): array {
+    if ($competitionId <= 0 || !scoring_pilot_identities_available($pdo)) {
+        return [];
+    }
+    $stmt = $pdo->prepare(
+        'SELECT id, display_name, primary_email
+         FROM rankings_scoring_pilot_identities
+         WHERE competition_id = ?
+         ORDER BY display_name ASC, id ASC'
+    );
+    $stmt->execute([$competitionId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function scoring_pilot_identity_option_label(string $name, ?string $email): string {
+    $label = trim($name);
+    $email = scoring_pilot_identity_normalized_email($email);
+    if ($email !== '') {
+        $label .= ' - ' . $email;
+    }
+    return $label;
+}
+
+function scoring_load_competition_pilot_identifier_options(PDO $pdo, array $currentTask): array {
+    $competitionId = (int)($currentTask['competition_id'] ?? 0);
+    $taskId = (int)($currentTask['id'] ?? 0);
+    $taskDate = (string)($currentTask['task_date'] ?? '');
+    if ($competitionId <= 0 || $taskId <= 0 || $taskDate === '' || !scoring_pilot_identities_available($pdo)) {
+        return [];
+    }
+
+    $options = [];
+    foreach (scoring_load_competition_pilot_identities($pdo, $competitionId) as $identity) {
+        $id = (int)$identity['id'];
+        if ($id <= 0) {
+            continue;
+        }
+        $options['identity:' . $id] = [
+            'value' => 'identity:' . $id,
+            'label' => scoring_pilot_identity_option_label((string)$identity['display_name'], $identity['primary_email'] ?? null),
+            'normalized_name' => scoring_pilot_identity_normalized_name((string)$identity['display_name']),
+            'normalized_email' => scoring_pilot_identity_normalized_email($identity['primary_email'] ?? null),
+            'source' => 'identity',
+        ];
+    }
+
+    $stmt = $pdo->prepare(
+        "SELECT f.id AS flight_id, f.pilot_name, f.pilot_email,
+                fi.identity_id,
+                pi.display_name AS identity_display_name,
+                pi.primary_email AS identity_primary_email,
+                t.task_date, t.id AS task_id
+         FROM rankings_scoring_task_flights f
+         JOIN rankings_scoring_tasks t ON t.id = f.task_id
+         LEFT JOIN rankings_scoring_task_flight_identities fi ON fi.flight_id = f.id
+         LEFT JOIN rankings_scoring_pilot_identities pi ON pi.id = fi.identity_id
+         WHERE t.competition_id = ?
+           AND (t.task_date < ? OR (t.task_date = ? AND t.id < ?))
+         ORDER BY t.task_date DESC, t.id DESC, f.pilot_name ASC"
+    );
+    $stmt->execute([$competitionId, $taskDate, $taskDate, $taskId]);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $identityId = (int)($row['identity_id'] ?? 0);
+        if ($identityId > 0) {
+            $key = 'identity:' . $identityId;
+            if (!isset($options[$key])) {
+                $name = (string)($row['identity_display_name'] ?: $row['pilot_name']);
+                $email = $row['identity_primary_email'] ?: ($row['pilot_email'] ?? null);
+                $options[$key] = [
+                    'value' => $key,
+                    'label' => scoring_pilot_identity_option_label($name, $email),
+                    'normalized_name' => scoring_pilot_identity_normalized_name($name),
+                    'normalized_email' => scoring_pilot_identity_normalized_email($email),
+                    'source' => 'identity',
+                ];
+            }
+            continue;
+        }
+
+        $normalizedName = scoring_pilot_identity_normalized_name((string)$row['pilot_name']);
+        $normalizedEmail = scoring_pilot_identity_normalized_email($row['pilot_email'] ?? null);
+        if ($normalizedName === '') {
+            continue;
+        }
+        $key = 'previous:' . $normalizedName . '|' . $normalizedEmail;
+        if (!isset($options[$key])) {
+            $options[$key] = [
+                'value' => 'previous:' . (int)$row['flight_id'],
+                'label' => scoring_pilot_identity_option_label((string)$row['pilot_name'], $row['pilot_email'] ?? null),
+                'normalized_name' => $normalizedName,
+                'normalized_email' => $normalizedEmail,
+                'source' => 'previous',
+            ];
+        }
+    }
+
+    usort($options, static function ($a, $b) {
+        return strcasecmp((string)$a['label'], (string)$b['label']);
+    });
+    return array_values($options);
+}
+
+function scoring_suggest_competition_pilot_identifier(array $options, string $pilotName, ?string $pilotEmail = null): string {
+    $normalizedName = scoring_pilot_identity_normalized_name($pilotName);
+    $normalizedEmail = scoring_pilot_identity_normalized_email($pilotEmail);
+    if ($normalizedEmail !== '') {
+        foreach ($options as $option) {
+            if (($option['normalized_email'] ?? '') === $normalizedEmail) {
+                return (string)$option['value'];
+            }
+        }
+    }
+    if ($normalizedName !== '') {
+        foreach ($options as $option) {
+            if (($option['normalized_name'] ?? '') === $normalizedName) {
+                return (string)$option['value'];
+            }
+        }
+    }
+    return 'new';
+}
+
+function scoring_find_competition_pilot_identity_id(PDO $pdo, int $competitionId, string $pilotName, ?string $pilotEmail = null): ?int {
+    if ($competitionId <= 0 || !scoring_pilot_identities_available($pdo)) {
+        return null;
+    }
+    $normalizedName = scoring_pilot_identity_normalized_name($pilotName);
+    $normalizedEmail = scoring_pilot_identity_normalized_email($pilotEmail);
+
+    if ($normalizedEmail !== '') {
+        $stmt = $pdo->prepare(
+            'SELECT id
+             FROM rankings_scoring_pilot_identities
+             WHERE competition_id = ? AND primary_email = ?
+             ORDER BY id ASC
+             LIMIT 1'
+        );
+        $stmt->execute([$competitionId, $normalizedEmail]);
+        $id = (int)$stmt->fetchColumn();
+        if ($id > 0) {
+            return $id;
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT identity_id
+             FROM rankings_scoring_pilot_identity_aliases
+             WHERE competition_id = ? AND normalized_email = ?
+             ORDER BY last_seen_at DESC, id DESC
+             LIMIT 1'
+        );
+        $stmt->execute([$competitionId, $normalizedEmail]);
+        $id = (int)$stmt->fetchColumn();
+        if ($id > 0) {
+            return $id;
+        }
+    }
+
+    if ($normalizedName === '') {
+        return null;
+    }
+    $stmt = $pdo->prepare(
+        'SELECT identity_id
+         FROM rankings_scoring_pilot_identity_aliases
+         WHERE competition_id = ? AND normalized_name = ? AND normalized_email = ?
+         ORDER BY last_seen_at DESC, id DESC
+         LIMIT 1'
+    );
+    $stmt->execute([$competitionId, $normalizedName, $normalizedEmail]);
+    $id = (int)$stmt->fetchColumn();
+    if ($id > 0) {
+        return $id;
+    }
+
+    $stmt = $pdo->prepare(
+        'SELECT identity_id
+         FROM rankings_scoring_pilot_identity_aliases
+         WHERE competition_id = ? AND normalized_name = ?
+         ORDER BY last_seen_at DESC, id DESC
+         LIMIT 1'
+    );
+    $stmt->execute([$competitionId, $normalizedName]);
+    $id = (int)$stmt->fetchColumn();
+    return $id > 0 ? $id : null;
+}
+
+function scoring_upsert_pilot_identity_alias(PDO $pdo, int $competitionId, int $identityId, string $pilotName, ?string $pilotEmail = null): void {
+    if ($competitionId <= 0 || $identityId <= 0 || !scoring_pilot_identities_available($pdo)) {
+        return;
+    }
+    $pilotName = trim($pilotName);
+    if ($pilotName === '') {
+        return;
+    }
+    $email = scoring_pilot_identity_normalized_email($pilotEmail);
+    $stmt = $pdo->prepare(
+        'INSERT INTO rankings_scoring_pilot_identity_aliases
+         (competition_id, identity_id, pilot_name, pilot_email, normalized_name, normalized_email)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           identity_id = VALUES(identity_id),
+           pilot_name = VALUES(pilot_name),
+           pilot_email = VALUES(pilot_email),
+           last_seen_at = NOW()'
+    );
+    $stmt->execute([
+        $competitionId,
+        $identityId,
+        $pilotName,
+        $email !== '' ? $email : null,
+        scoring_pilot_identity_normalized_name($pilotName),
+        $email,
+    ]);
+    scoring_assign_matching_competition_flights_to_identity($pdo, $competitionId, $identityId, $pilotName, $email !== '' ? $email : null);
+}
+
+function scoring_assign_matching_competition_flights_to_identity(PDO $pdo, int $competitionId, int $identityId, string $pilotName, ?string $pilotEmail = null): void {
+    if ($competitionId <= 0 || $identityId <= 0 || !scoring_pilot_identities_available($pdo)) {
+        return;
+    }
+    $normalizedName = scoring_pilot_identity_normalized_name($pilotName);
+    if ($normalizedName === '') {
+        return;
+    }
+    $normalizedEmail = scoring_pilot_identity_normalized_email($pilotEmail);
+    $stmt = $pdo->prepare(
+        'SELECT f.id, f.pilot_name, f.pilot_email
+         FROM rankings_scoring_task_flights f
+         JOIN rankings_scoring_tasks t ON t.id = f.task_id
+         WHERE t.competition_id = ?'
+    );
+    $stmt->execute([$competitionId]);
+    $insert = $pdo->prepare(
+        'INSERT INTO rankings_scoring_task_flight_identities (flight_id, identity_id)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE identity_id = VALUES(identity_id), updated_at = NOW()'
+    );
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $flight) {
+        if (scoring_pilot_identity_normalized_name((string)$flight['pilot_name']) !== $normalizedName) {
+            continue;
+        }
+        if (scoring_pilot_identity_normalized_email($flight['pilot_email'] ?? null) !== $normalizedEmail) {
+            continue;
+        }
+        $insert->execute([(int)$flight['id'], $identityId]);
+    }
+}
+
+function scoring_create_competition_pilot_identity(PDO $pdo, int $competitionId, string $pilotName, ?string $pilotEmail = null): int {
+    if ($competitionId <= 0 || !scoring_pilot_identities_available($pdo)) {
+        return 0;
+    }
+    $pilotName = trim($pilotName);
+    if ($pilotName === '') {
+        throw new RuntimeException('Vul een pilotnaam in.');
+    }
+    $email = scoring_pilot_identity_normalized_email($pilotEmail);
+    $stmt = $pdo->prepare(
+        'INSERT INTO rankings_scoring_pilot_identities (competition_id, display_name, primary_email)
+         VALUES (?, ?, ?)'
+    );
+    $stmt->execute([$competitionId, $pilotName, $email !== '' ? $email : null]);
+    $identityId = (int)$pdo->lastInsertId();
+    scoring_upsert_pilot_identity_alias($pdo, $competitionId, $identityId, $pilotName, $email !== '' ? $email : null);
+    return $identityId;
+}
+
+function scoring_assign_task_flight_identity(PDO $pdo, int $competitionId, int $flightId, int $identityId, string $pilotName, ?string $pilotEmail = null): int {
+    if ($competitionId <= 0 || $flightId <= 0 || !scoring_pilot_identities_available($pdo)) {
+        return 0;
+    }
+    if ($identityId <= 0) {
+        $identityId = scoring_create_competition_pilot_identity($pdo, $competitionId, $pilotName, $pilotEmail);
+        if ($identityId <= 0) {
+            return 0;
+        }
+    } else {
+        $stmt = $pdo->prepare(
+            'SELECT id, primary_email
+             FROM rankings_scoring_pilot_identities
+             WHERE id = ? AND competition_id = ?
+             LIMIT 1'
+        );
+        $stmt->execute([$identityId, $competitionId]);
+        $identity = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$identity) {
+            throw new RuntimeException('Ongeldige pilot-identiteit.');
+        }
+        $email = scoring_pilot_identity_normalized_email($pilotEmail);
+        if ($email !== '' && trim((string)($identity['primary_email'] ?? '')) === '') {
+            $pdo->prepare('UPDATE rankings_scoring_pilot_identities SET primary_email = ? WHERE id = ?')->execute([$email, $identityId]);
+        }
+        scoring_upsert_pilot_identity_alias($pdo, $competitionId, $identityId, $pilotName, $email !== '' ? $email : null);
+    }
+
+    $stmt = $pdo->prepare(
+        'INSERT INTO rankings_scoring_task_flight_identities (flight_id, identity_id)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE identity_id = VALUES(identity_id), updated_at = NOW()'
+    );
+    $stmt->execute([$flightId, $identityId]);
+    return $identityId;
+}
+
+function scoring_assign_task_flight_identifier_selection(PDO $pdo, int $competitionId, int $flightId, string $selection, string $pilotName, ?string $pilotEmail = null): int {
+    if ($selection === '' || $selection === 'new') {
+        return scoring_assign_task_flight_identity($pdo, $competitionId, $flightId, 0, $pilotName, $pilotEmail);
+    }
+    if (ctype_digit($selection)) {
+        return scoring_assign_task_flight_identity($pdo, $competitionId, $flightId, (int)$selection, $pilotName, $pilotEmail);
+    }
+    if (strpos($selection, 'identity:') === 0) {
+        return scoring_assign_task_flight_identity($pdo, $competitionId, $flightId, (int)substr($selection, 9), $pilotName, $pilotEmail);
+    }
+    if (strpos($selection, 'previous:') !== 0) {
+        throw new RuntimeException('Ongeldige pilot-identifier.');
+    }
+
+    $previousFlightId = (int)substr($selection, 9);
+    $stmt = $pdo->prepare(
+        'SELECT f.id, f.pilot_name, f.pilot_email, fi.identity_id
+         FROM rankings_scoring_task_flights f
+         JOIN rankings_scoring_tasks t ON t.id = f.task_id
+         LEFT JOIN rankings_scoring_task_flight_identities fi ON fi.flight_id = f.id
+         WHERE f.id = ? AND t.competition_id = ?
+         LIMIT 1'
+    );
+    $stmt->execute([$previousFlightId, $competitionId]);
+    $previous = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$previous) {
+        throw new RuntimeException('Ongeldige vorige pilot-identifier.');
+    }
+
+    $identityId = (int)($previous['identity_id'] ?? 0);
+    if ($identityId <= 0) {
+        $identityId = scoring_assign_task_flight_identity(
+            $pdo,
+            $competitionId,
+            $previousFlightId,
+            0,
+            (string)$previous['pilot_name'],
+            $previous['pilot_email'] ?? null
+        );
+    }
+    return scoring_assign_task_flight_identity($pdo, $competitionId, $flightId, $identityId, $pilotName, $pilotEmail);
+}
+
+function scoring_assign_known_task_flight_identity(PDO $pdo, int $competitionId, int $flightId, string $pilotName, ?string $pilotEmail = null): ?int {
+    $identityId = scoring_find_competition_pilot_identity_id($pdo, $competitionId, $pilotName, $pilotEmail);
+    if (!$identityId) {
+        return null;
+    }
+    scoring_assign_task_flight_identity($pdo, $competitionId, $flightId, $identityId, $pilotName, $pilotEmail);
+    return $identityId;
+}
+
 function scoring_store_tracklog_upload(PDO $pdo, array $file, string $pilotName, ?string $pilotEmail = null): int {
     $pilotName = trim($pilotName);
     if ($pilotName === '') {
@@ -1056,6 +1437,82 @@ function scoring_parse_igc_file(string $path): array {
     ];
 }
 
+function scoring_sample_tracklog_points(array $fixes, int $maxPoints = 500): array {
+    $count = count($fixes);
+    if ($count === 0) {
+        return [];
+    }
+
+    $maxPoints = max(1, min(1000, $maxPoints));
+    $indices = [];
+    if ($count <= $maxPoints) {
+        $indices = range(0, $count - 1);
+    } elseif ($maxPoints === 1) {
+        $indices = [0];
+    } else {
+        $last = $count - 1;
+        for ($i = 0; $i < $maxPoints; $i++) {
+            $indices[] = (int)round($i * $last / ($maxPoints - 1));
+        }
+        $indices = array_values(array_unique($indices));
+    }
+
+    $points = [];
+    $previous = null;
+    foreach ($indices as $index) {
+        $fix = $fixes[$index] ?? null;
+        if (!$fix || !isset($fix['lat'], $fix['lon'])) {
+            continue;
+        }
+        $point = [round((float)$fix['lat'], 6), round((float)$fix['lon'], 6)];
+        if ($previous !== $point) {
+            $points[] = $point;
+            $previous = $point;
+        }
+    }
+    return $points;
+}
+
+function scoring_tracklog_map_preview(PDO $pdo, int $tracklogId, int $maxPoints = 500): ?array {
+    if ($tracklogId <= 0) {
+        return null;
+    }
+
+    $stmt = $pdo->prepare(
+        'SELECT id, original_filename, storage_path
+         FROM rankings_scoring_tracklogs
+         WHERE id = ?
+         LIMIT 1'
+    );
+    $stmt->execute([$tracklogId]);
+    $tracklog = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$tracklog || trim((string)($tracklog['storage_path'] ?? '')) === '') {
+        return null;
+    }
+
+    $path = scoring_public_upload_path((string)$tracklog['storage_path']);
+    if (!is_file($path)) {
+        return null;
+    }
+
+    try {
+        $igc = scoring_parse_igc_file($path);
+    } catch (Throwable $e) {
+        return null;
+    }
+
+    $points = scoring_sample_tracklog_points($igc['fixes'] ?? [], $maxPoints);
+    if (empty($points)) {
+        return null;
+    }
+
+    return [
+        'filename' => (string)$tracklog['original_filename'],
+        'points' => $points,
+        'fix_count' => (int)$igc['fix_count'],
+    ];
+}
+
 function scoring_haversine_km(float $lat1, float $lon1, float $lat2, float $lon2): float {
     $a = 6378.137;
     $f = 1 / 298.257223563;
@@ -1130,7 +1587,11 @@ function scoring_center_route_distance_km(array $turnpoints): float {
 function scoring_optimised_route_metrics(array $turnpoints): array {
     $count = count($turnpoints);
     if ($count < 2) {
-        return ['distance' => 0.0, 'cumulative' => array_fill(0, $count, 0.0)];
+        $path = [];
+        foreach ($turnpoints as $tp) {
+            $path[] = [round((float)$tp['latitude'], 7), round((float)$tp['longitude'], 7)];
+        }
+        return ['distance' => 0.0, 'cumulative' => array_fill(0, $count, 0.0), 'path' => $path];
     }
 
     static $cache = [];
@@ -1269,15 +1730,64 @@ function scoring_optimised_route_metrics(array $turnpoints): array {
         $cumulative[$i] = $cumulative[$i - 1] + hypot($path[$i]['x'] - $path[$i - 1]['x'], $path[$i]['y'] - $path[$i - 1]['y']);
     }
 
+    $safeXScale = abs($xScale) > 0.000000001 ? $xScale : 0.000000001;
+    $safeYScale = abs($yScale) > 0.000000001 ? $yScale : 0.000000001;
+    $routePath = [];
+    foreach ($path as $point) {
+        $routePath[] = [
+            round($latRef + ($point['y'] / $safeYScale), 7),
+            round($lonRef + ($point['x'] / $safeXScale), 7),
+        ];
+    }
+
     $cache[$cacheKey] = [
         'distance' => $cumulative[$count - 1],
         'cumulative' => $cumulative,
+        'path' => $routePath,
     ];
     return $cache[$cacheKey];
 }
 
 function scoring_task_distance_km(array $turnpoints): float {
     return scoring_optimised_route_metrics($turnpoints)['distance'];
+}
+
+function scoring_task_map_data(array $turnpoints): ?array {
+    if (empty($turnpoints)) {
+        return null;
+    }
+
+    [$sssIndex, $essIndex] = scoring_speed_section_indices($turnpoints);
+    $points = [];
+    foreach ($turnpoints as $idx => $tp) {
+        $isSss = $idx === $sssIndex;
+        $isEss = $idx === $essIndex;
+        $role = 'normal';
+        if ($isSss && $isEss) {
+            $role = 'sss_ess';
+        } elseif ($isSss) {
+            $role = 'sss';
+        } elseif ($isEss) {
+            $role = 'ess';
+        }
+
+        $points[] = [
+            'sequence' => (int)($tp['sequence_no'] ?? ($idx + 1)),
+            'name' => (string)($tp['name'] ?? ('TP ' . ($idx + 1))),
+            'code' => (string)($tp['code'] ?? ''),
+            'lat' => round((float)$tp['latitude'], 7),
+            'lon' => round((float)$tp['longitude'], 7),
+            'radius_m' => max(0, (int)($tp['radius_m'] ?? 0)),
+            'role' => $role,
+        ];
+    }
+
+    $metrics = scoring_optimised_route_metrics($turnpoints);
+    return [
+        'turnpoints' => $points,
+        'route' => $metrics['path'] ?? [],
+        'distance_km' => (float)($metrics['distance'] ?? 0.0),
+    ];
 }
 
 function scoring_speed_section_center_distance_km(array $turnpoints): float {
@@ -1406,6 +1916,379 @@ function scoring_load_task(PDO $pdo, int $taskId): ?array {
     $stmt->execute([$taskId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ?: null;
+}
+
+function scoring_publication_snapshots_available(PDO $pdo): bool {
+    static $available = null;
+    if ($available !== null) {
+        return $available;
+    }
+    try {
+        $pdo->query('SELECT 1 FROM rankings_scoring_task_publications LIMIT 1');
+        $pdo->query('SELECT 1 FROM rankings_scoring_task_public_results LIMIT 1');
+        $available = true;
+    } catch (Throwable $e) {
+        $available = false;
+    }
+    return $available;
+}
+
+function scoring_ensure_publication_snapshot_tables(PDO $pdo): void {
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS rankings_scoring_task_publications (
+          task_id INT UNSIGNED NOT NULL,
+          task_distance_km DECIMAL(8,3) DEFAULT NULL,
+          scoring_summary_json MEDIUMTEXT DEFAULT NULL,
+          published_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (task_id),
+          KEY idx_rankings_scoring_task_publications_published (published_at),
+          CONSTRAINT fk_rankings_scoring_task_publications_task
+            FOREIGN KEY (task_id) REFERENCES rankings_scoring_tasks(id)
+            ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS rankings_scoring_task_public_results (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+          task_id INT UNSIGNED NOT NULL,
+          source_flight_id INT UNSIGNED NOT NULL,
+          pilot_name VARCHAR(160) NOT NULL,
+          pilot_email VARCHAR(190) DEFAULT NULL,
+          pilot_identity_id INT UNSIGNED DEFAULT NULL,
+          distance_km DECIMAL(9,3) DEFAULT NULL,
+          start_time_at DATETIME DEFAULT NULL,
+          ess_time_at DATETIME DEFAULT NULL,
+          goal_time_at DATETIME DEFAULT NULL,
+          time_seconds INT UNSIGNED DEFAULT NULL,
+          reached_ess TINYINT(1) NOT NULL DEFAULT 0,
+          reached_goal TINYINT(1) NOT NULL DEFAULT 0,
+          distance_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          time_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          departure_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          leading_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          arrival_position_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          arrival_time_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          total_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          rank_no INT UNSIGNED DEFAULT NULL,
+          evaluation_json MEDIUMTEXT DEFAULT NULL,
+          scored_at DATETIME DEFAULT NULL,
+          published_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          UNIQUE KEY uq_rankings_scoring_task_public_results_flight (task_id, source_flight_id),
+          KEY idx_rankings_scoring_task_public_results_task (task_id),
+          KEY idx_rankings_scoring_task_public_results_identity (pilot_identity_id),
+          CONSTRAINT fk_rankings_scoring_task_public_results_task
+            FOREIGN KEY (task_id) REFERENCES rankings_scoring_tasks(id)
+            ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+}
+
+function scoring_load_task_publication(PDO $pdo, int $taskId): ?array {
+    if ($taskId <= 0 || !scoring_publication_snapshots_available($pdo)) {
+        return null;
+    }
+    $stmt = $pdo->prepare(
+        'SELECT *
+         FROM rankings_scoring_task_publications
+         WHERE task_id = ?
+         LIMIT 1'
+    );
+    $stmt->execute([$taskId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ?: null;
+}
+
+function scoring_load_task_public_results(PDO $pdo, int $taskId): array {
+    if ($taskId <= 0 || !scoring_publication_snapshots_available($pdo)) {
+        return [];
+    }
+    $stmt = $pdo->prepare(
+        'SELECT *
+         FROM rankings_scoring_task_public_results
+         WHERE task_id = ?
+         ORDER BY rank_no ASC, total_points DESC, pilot_name ASC'
+    );
+    $stmt->execute([$taskId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function scoring_load_public_competition_tasks(PDO $pdo, int $competitionId): array {
+    if ($competitionId <= 0 || !scoring_publication_snapshots_available($pdo)) {
+        return [];
+    }
+    $stmt = $pdo->prepare(
+        "SELECT t.id, t.name, t.task_date, p.published_at
+         FROM rankings_scoring_tasks t
+         JOIN rankings_scoring_task_publications p ON p.task_id = t.id
+         WHERE t.competition_id = ? AND t.status = 'published'
+         ORDER BY t.task_date ASC, t.id ASC"
+    );
+    $stmt->execute([$competitionId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function scoring_clear_task_publication(PDO $pdo, int $taskId): void {
+    if ($taskId <= 0 || !scoring_publication_snapshots_available($pdo)) {
+        return;
+    }
+    $pdo->prepare('DELETE FROM rankings_scoring_task_public_results WHERE task_id = ?')->execute([$taskId]);
+    $pdo->prepare('DELETE FROM rankings_scoring_task_publications WHERE task_id = ?')->execute([$taskId]);
+}
+
+function scoring_publish_task_results(PDO $pdo, int $taskId): array {
+    if ($taskId <= 0) {
+        throw new RuntimeException('Taak niet gevonden.');
+    }
+    scoring_ensure_publication_snapshot_tables($pdo);
+    if (!scoring_publication_snapshots_available($pdo)) {
+        throw new RuntimeException('De publicatie-tabellen ontbreken nog. Voer database/scoring_schema.sql opnieuw uit.');
+    }
+
+    $startedTransaction = false;
+    if (!$pdo->inTransaction()) {
+        $pdo->beginTransaction();
+        $startedTransaction = true;
+    }
+
+    try {
+        $task = scoring_load_task($pdo, $taskId);
+        if (!$task) {
+            throw new RuntimeException('Taak niet gevonden.');
+        }
+
+        $identitySelect = 'f.pilot_name, f.pilot_email, NULL AS pilot_identity_id';
+        $identityJoin = '';
+        if (scoring_pilot_identities_available($pdo)) {
+            $identitySelect = "COALESCE(pi.display_name, f.pilot_name) AS pilot_name,
+                    COALESCE(NULLIF(pi.primary_email, ''), f.pilot_email) AS pilot_email,
+                    pi.id AS pilot_identity_id";
+            $identityJoin = 'LEFT JOIN rankings_scoring_task_flight_identities fi ON fi.flight_id = f.id
+             LEFT JOIN rankings_scoring_pilot_identities pi ON pi.id = fi.identity_id AND pi.competition_id = t.competition_id';
+        }
+
+        $stmt = $pdo->prepare(
+            "SELECT f.id AS source_flight_id,
+                    $identitySelect,
+                    f.distance_km, f.start_time_at, f.ess_time_at, f.goal_time_at, f.time_seconds,
+                    f.reached_ess, f.reached_goal, f.distance_points, f.time_points, f.departure_points,
+                    f.leading_points, f.arrival_position_points, f.arrival_time_points, f.total_points,
+                    f.rank_no, f.evaluation_json, f.scored_at
+             FROM rankings_scoring_task_flights f
+             JOIN rankings_scoring_tasks t ON t.id = f.task_id
+             $identityJoin
+             WHERE f.task_id = ?
+               AND f.is_excluded = 0
+               AND f.scored_at IS NOT NULL
+             ORDER BY f.rank_no ASC, f.total_points DESC, pilot_name ASC"
+        );
+        $stmt->execute([$taskId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (empty($rows)) {
+            throw new RuntimeException('Score de taak voordat je publiceert.');
+        }
+
+        $publishedAt = (string)$pdo->query('SELECT NOW()')->fetchColumn();
+        $pdo->prepare('DELETE FROM rankings_scoring_task_public_results WHERE task_id = ?')->execute([$taskId]);
+        $insert = $pdo->prepare(
+            'INSERT INTO rankings_scoring_task_public_results
+             (task_id, source_flight_id, pilot_name, pilot_email, pilot_identity_id,
+              distance_km, start_time_at, ess_time_at, goal_time_at, time_seconds,
+              reached_ess, reached_goal, distance_points, time_points, departure_points,
+              leading_points, arrival_position_points, arrival_time_points, total_points,
+              rank_no, evaluation_json, scored_at, published_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        foreach ($rows as $row) {
+            $identityId = isset($row['pilot_identity_id']) ? (int)$row['pilot_identity_id'] : 0;
+            $insert->execute([
+                $taskId,
+                (int)$row['source_flight_id'],
+                (string)$row['pilot_name'],
+                $row['pilot_email'] ?? null,
+                $identityId > 0 ? $identityId : null,
+                $row['distance_km'],
+                $row['start_time_at'],
+                $row['ess_time_at'],
+                $row['goal_time_at'],
+                $row['time_seconds'],
+                (int)$row['reached_ess'],
+                (int)$row['reached_goal'],
+                $row['distance_points'],
+                $row['time_points'],
+                $row['departure_points'],
+                $row['leading_points'],
+                $row['arrival_position_points'],
+                $row['arrival_time_points'],
+                $row['total_points'],
+                $row['rank_no'],
+                $row['evaluation_json'],
+                $row['scored_at'],
+                $publishedAt,
+            ]);
+        }
+
+        $pdo->prepare(
+            'INSERT INTO rankings_scoring_task_publications
+             (task_id, task_distance_km, scoring_summary_json, published_at)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               task_distance_km = VALUES(task_distance_km),
+               scoring_summary_json = VALUES(scoring_summary_json),
+               published_at = VALUES(published_at),
+               updated_at = NOW()'
+        )->execute([
+            $taskId,
+            $task['task_distance_km'],
+            $task['scoring_summary_json'],
+            $publishedAt,
+        ]);
+
+        $pdo->prepare('UPDATE rankings_scoring_tasks SET status = ?, published_at = ? WHERE id = ?')->execute(['published', $publishedAt, $taskId]);
+        $pdo->prepare('UPDATE rankings_scoring_competitions SET is_public = 1 WHERE id = ?')->execute([(int)$task['competition_id']]);
+
+        if ($startedTransaction) {
+            $pdo->commit();
+        }
+
+        return ['published_rows' => count($rows), 'published_at' => $publishedAt];
+    } catch (Throwable $e) {
+        if ($startedTransaction && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+}
+
+function scoring_competition_standings_pilot_key(string $pilotName, ?string $pilotEmail, ?int $pilotIdentityId = null): string {
+    if ($pilotIdentityId !== null && $pilotIdentityId > 0) {
+        return 'identity:' . $pilotIdentityId;
+    }
+
+    $email = scoring_normalize_email((string)$pilotEmail);
+    if ($email !== '' && !scoring_is_placeholder_email($email)) {
+        return 'email:' . $email;
+    }
+
+    $name = trim(preg_replace('/\s+/', ' ', $pilotName));
+    $name = function_exists('mb_strtolower') ? mb_strtolower($name, 'UTF-8') : strtolower($name);
+    return 'name:' . $name;
+}
+
+function scoring_competition_standings_through_task(PDO $pdo, int $taskId): array {
+    $throughTask = scoring_load_task($pdo, $taskId);
+    if (!$throughTask) {
+        throw new RuntimeException('Taak niet gevonden.');
+    }
+    if ((string)$throughTask['status'] !== 'published') {
+        throw new RuntimeException('Deze taak is nog niet gepubliceerd.');
+    }
+    if (!scoring_publication_snapshots_available($pdo)) {
+        throw new RuntimeException('De publicatie-tabellen ontbreken nog. Voer database/scoring_schema.sql opnieuw uit.');
+    }
+    if (!scoring_load_task_publication($pdo, $taskId)) {
+        throw new RuntimeException('Deze taak heeft nog geen gepubliceerde score-snapshot.');
+    }
+
+    $competition = scoring_load_competition($pdo, (int)$throughTask['competition_id']);
+    if (!$competition) {
+        throw new RuntimeException('Competitie niet gevonden.');
+    }
+
+    $stmt = $pdo->prepare(
+        "SELECT t.id, t.name, t.task_date, p.published_at
+         FROM rankings_scoring_tasks t
+         JOIN rankings_scoring_task_publications p ON p.task_id = t.id
+         WHERE t.competition_id = ?
+           AND t.status = 'published'
+           AND (t.task_date < ? OR (t.task_date = ? AND t.id <= ?))
+         ORDER BY t.task_date ASC, t.id ASC"
+    );
+    $stmt->execute([
+        (int)$throughTask['competition_id'],
+        (string)$throughTask['task_date'],
+        (string)$throughTask['task_date'],
+        $taskId,
+    ]);
+    $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if (empty($tasks)) {
+        return ['competition' => $competition, 'through_task' => $throughTask, 'tasks' => [], 'rows' => []];
+    }
+
+    $taskIndexById = [];
+    foreach ($tasks as $index => $task) {
+        $taskIndexById[(int)$task['id']] = $index;
+    }
+
+    $taskIds = array_map(static function ($task) {
+        return (int)$task['id'];
+    }, $tasks);
+    $placeholders = implode(',', array_fill(0, count($taskIds), '?'));
+    $stmt = $pdo->prepare(
+        "SELECT r.task_id, r.pilot_name, r.pilot_email, r.pilot_identity_id, r.total_points
+         FROM rankings_scoring_task_public_results r
+         JOIN rankings_scoring_tasks t ON t.id = r.task_id
+         WHERE r.task_id IN ($placeholders)
+         ORDER BY t.task_date ASC, t.id ASC, r.rank_no ASC, r.total_points DESC, r.pilot_name ASC"
+    );
+    $stmt->execute($taskIds);
+
+    $rowsByPilot = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $flight) {
+        $taskIdForFlight = (int)$flight['task_id'];
+        if (!isset($taskIndexById[$taskIdForFlight])) {
+            continue;
+        }
+
+        $key = scoring_competition_standings_pilot_key((string)$flight['pilot_name'], $flight['pilot_email'] ?? null, isset($flight['pilot_identity_id']) ? (int)$flight['pilot_identity_id'] : null);
+        if (!isset($rowsByPilot[$key])) {
+            $rowsByPilot[$key] = [
+                'pilot_name' => (string)$flight['pilot_name'],
+                'pilot_email' => (string)($flight['pilot_email'] ?? ''),
+                'task_points' => array_fill(0, count($tasks), 0.0),
+                'total_points' => 0.0,
+            ];
+        }
+
+        $taskIndex = $taskIndexById[$taskIdForFlight];
+        $points = round((float)$flight['total_points'], 1);
+        if ($points >= (float)$rowsByPilot[$key]['task_points'][$taskIndex]) {
+            $rowsByPilot[$key]['total_points'] += $points - (float)$rowsByPilot[$key]['task_points'][$taskIndex];
+            $rowsByPilot[$key]['task_points'][$taskIndex] = $points;
+            $rowsByPilot[$key]['pilot_name'] = (string)$flight['pilot_name'];
+            if (!scoring_is_placeholder_email($flight['pilot_email'] ?? null)) {
+                $rowsByPilot[$key]['pilot_email'] = (string)$flight['pilot_email'];
+            }
+        }
+    }
+
+    $rows = array_values($rowsByPilot);
+    usort($rows, static function ($a, $b) {
+        if (abs((float)$a['total_points'] - (float)$b['total_points']) < 0.0001) {
+            return strcasecmp((string)$a['pilot_name'], (string)$b['pilot_name']);
+        }
+        return (float)$a['total_points'] < (float)$b['total_points'] ? 1 : -1;
+    });
+
+    $rank = 0;
+    $shown = 0;
+    $previousTotal = null;
+    foreach ($rows as &$row) {
+        $shown++;
+        $total = (float)$row['total_points'];
+        if ($previousTotal === null || abs($total - $previousTotal) > 0.0001) {
+            $rank = $shown;
+            $previousTotal = $total;
+        }
+        $row['rank_no'] = $rank;
+        $row['total_points'] = round($total, 1);
+    }
+    unset($row);
+
+    return ['competition' => $competition, 'through_task' => $throughTask, 'tasks' => $tasks, 'rows' => $rows];
 }
 
 function scoring_competition_buddies_available(PDO $pdo): bool {
@@ -1668,6 +2551,14 @@ function scoring_match_task_tracklogs(PDO $pdo, array $task, array $turnpoints):
     );
     foreach ($tracklogs as $tracklog) {
         $insert->execute([(int)$task['id'], (int)$tracklog['id'], $tracklog['pilot_name'], $tracklog['pilot_email']]);
+        if (scoring_pilot_identities_available($pdo)) {
+            $lookup = $pdo->prepare('SELECT id FROM rankings_scoring_task_flights WHERE task_id = ? AND tracklog_id = ? LIMIT 1');
+            $lookup->execute([(int)$task['id'], (int)$tracklog['id']]);
+            $flightId = (int)$lookup->fetchColumn();
+            if ($flightId > 0) {
+                scoring_assign_known_task_flight_identity($pdo, (int)$task['competition_id'], $flightId, (string)$tracklog['pilot_name'], $tracklog['pilot_email'] ?? null);
+            }
+        }
     }
     return count($tracklogs);
 }

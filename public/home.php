@@ -140,7 +140,7 @@ app_page_start(app_site_name() . ' - Home', [
 
     <article class="card tile memory-feature">
       <div class="kicker">Collectief geheugen</div>
-      <h2>Herinneringen</h2>
+      <h2>NK Herinneringen</h2>
       <?php if (!empty($latestMemories)): ?>
         <?php $slideCount = count($latestMemories); ?>
         <div class="memory-showcase <?= $slideCount === 1 ? 'is-single' : '' ?>" style="--memory-slide-count: <?= (int)max(1, $slideCount) ?>;">
@@ -181,6 +181,7 @@ app_page_start(app_site_name() . ' - Home', [
       <?php else: ?>
         <p class="muted">Nog geen herinneringen geplaatst.</p>
       <?php endif; ?>
+      <p class="muted memory-contribution-note">Draag bij aan het collectieve geheugen: blader naar een <a href="competitionlist.php">NK resultatenlijst</a> en voeg daar je herinnering toe.</p>
     </article>
 
     <article class="card tile">

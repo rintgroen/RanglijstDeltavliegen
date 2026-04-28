@@ -19,16 +19,33 @@ if (!$competition || !scoring_can_edit_competition($pdo, $competitionId, (int)$s
     exit;
 }
 $isOwner = (int)$competition['scorer_id'] === (int)$scorer['id'];
+$requestedTab = is_string($_GET['tab'] ?? null) ? $_GET['tab'] : '';
+if ($requestedTab === 'tasks') {
+    $requestedTab = 'new_task';
+}
+$activeTab = in_array($requestedTab, ['settings', 'new_task'], true) ? $requestedTab : 'settings';
+$competitionTabByAction = [
+    'update_competition' => 'settings',
+    'add_buddy_scorer' => 'settings',
+    'remove_buddy_scorer' => 'settings',
+    'create_task' => 'new_task',
+    'add_waypoint' => 'settings',
+    'reimport_waypoints' => 'settings',
+];
 
 $notice = null;
 $error = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $postedAction = (string)($_POST['action'] ?? '');
+    if (isset($competitionTabByAction[$postedAction])) {
+        $activeTab = $competitionTabByAction[$postedAction];
+    }
     if (!app_check_csrf()) {
         $error = 'Ongeldige CSRF-token.';
     } else {
         try {
-            $action = (string)($_POST['action'] ?? '');
+            $action = $postedAction;
             if ($action === 'update_competition') {
                 $name = trim((string)($_POST['name'] ?? ''));
                 $class = (string)($_POST['class'] ?? 'Klasse 1');
@@ -170,240 +187,218 @@ $defaultClose = date('Y-m-d\T19:00');
 app_page_start($competition['name'] . ' - Scoring', [
     'active_scoring' => 'dashboard',
     'scoring_user' => $scorer['name'] ?: $scorer['email'],
+    'scoring_breadcrumbs' => [
+        ['label' => 'Competities', 'href' => 'index.php'],
+        ['label' => $competition['name'], 'href' => 'competition.php?id=' . (int)$competitionId],
+        ['label' => $activeTab === 'new_task' ? 'Nieuwe taak' : 'Instellingen'],
+    ],
     'description' => 'Competitie beheren.',
 ]);
 ?>
 <main>
-  <section class="card">
-    <div class="section-header">
-      <div>
-        <div class="kicker">Competitie</div>
-        <h1><?= h($competition['name']) ?></h1>
-        <p class="muted"><?= h($competition['class']) ?> - <?= h($competition['scope']) ?><?= $competition['location'] ? ' - ' . h($competition['location']) : '' ?></p>
+  <section class="competition-tabs">
+    <nav class="site-nav public-nav competition-section-nav" aria-label="Competitie onderdelen">
+      <span class="competition-nav-title"><?= h($competition['name']) ?></span>
+      <div class="nav-cluster nav-cluster-single<?= $activeTab === 'settings' ? ' has-active' : '' ?>">
+        <?php app_nav_link('competition.php?id=' . (int)$competitionId . '&tab=settings', 'Instellingen', $activeTab === 'settings'); ?>
       </div>
-      <a class="btn secondary" href="index.php">Terug</a>
-    </div>
+      <div class="nav-cluster<?= $activeTab === 'new_task' ? ' has-active' : '' ?>" role="group" aria-labelledby="competition-nav-tasks">
+        <span class="nav-group-label" id="competition-nav-tasks">Taken</span>
+        <?php foreach ($tasks as $taskNav): ?>
+          <?php app_nav_link('task.php?id=' . (int)$taskNav['id'], (string)$taskNav['name'], false); ?>
+        <?php endforeach; ?>
+        <?php app_nav_link('competition.php?id=' . (int)$competitionId . '&tab=new_task', 'Nieuwe taak', $activeTab === 'new_task'); ?>
+      </div>
+    </nav>
     <?php if ($notice): ?><div class="alert success"><?= h($notice) ?></div><?php endif; ?>
     <?php if ($error): ?><div class="alert error"><?= h($error) ?></div><?php endif; ?>
-  </section>
 
-  <section class="card">
-    <h2>Instellingen</h2>
-    <form method="post">
-      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-      <input type="hidden" name="action" value="update_competition">
-      <div class="grid">
-        <label>Naam
-          <input type="text" name="name" value="<?= h($competition['name']) ?>" required maxlength="190">
-        </label>
-        <label>Klasse
-          <select name="class">
-            <?php foreach (['Klasse 1', 'Sportklasse', 'Open'] as $classOption): ?>
-              <option value="<?= h($classOption) ?>" <?= $competition['class'] === $classOption ? 'selected' : '' ?>><?= h($classOption) ?></option>
+    <?php if ($activeTab === 'settings'): ?>
+      <section class="card">
+        <h2>Instellingen</h2>
+        <form method="post">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="update_competition">
+          <div class="grid">
+            <label>Naam
+              <input type="text" name="name" value="<?= h($competition['name']) ?>" required maxlength="190">
+            </label>
+            <label>Klasse
+              <select name="class">
+                <?php foreach (['Klasse 1', 'Sportklasse', 'Open'] as $classOption): ?>
+                  <option value="<?= h($classOption) ?>" <?= $competition['class'] === $classOption ? 'selected' : '' ?>><?= h($classOption) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </label>
+            <label>Type
+              <select name="scope">
+                <option value="open" <?= $competition['scope'] === 'open' ? 'selected' : '' ?>>Open competitie</option>
+                <option value="club" <?= $competition['scope'] === 'club' ? 'selected' : '' ?>>Clubcompetitie</option>
+                <option value="dutch_national_candidate" <?= $competition['scope'] === 'dutch_national_candidate' ? 'selected' : '' ?>>NK kandidaat</option>
+              </select>
+            </label>
+            <label>Status
+              <select name="status">
+                <option value="draft" <?= $competition['status'] === 'draft' ? 'selected' : '' ?>>Concept</option>
+                <option value="open" <?= $competition['status'] === 'open' ? 'selected' : '' ?>>Open</option>
+                <option value="closed" <?= $competition['status'] === 'closed' ? 'selected' : '' ?>>Gesloten</option>
+              </select>
+            </label>
+            <label>Locatie
+              <input type="text" name="location" value="<?= h($competition['location'] ?? '') ?>" maxlength="190">
+            </label>
+            <label class="check-row">
+              <input type="checkbox" name="is_public" <?= (int)$competition['is_public'] === 1 ? 'checked' : '' ?>> Publieke resultaten tonen
+            </label>
+          </div>
+          <p><button type="submit">Opslaan</button></p>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Scorers</h2>
+        <form method="post" class="panel">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="add_buddy_scorer">
+          <div class="grid">
+            <label>Naam (optioneel)
+              <input type="text" name="buddy_name" maxlength="160">
+            </label>
+            <label>E-mail
+              <input type="email" name="buddy_email" required maxlength="190">
+            </label>
+          </div>
+          <p><button type="submit">Buddy scorer toevoegen</button></p>
+        </form>
+
+        <?php if (empty($editors)): ?>
+          <p class="muted">Nog geen scorers gekoppeld.</p>
+        <?php else: ?>
+          <div class="table-responsive">
+            <table class="striped compact-table">
+              <thead>
+                <tr>
+                  <th>Naam</th>
+                  <th>E-mail</th>
+                  <th>Rol</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($editors as $editor): ?>
+                  <tr>
+                    <td><?= h($editor['name'] ?: '-') ?></td>
+                    <td><?= h($editor['email']) ?></td>
+                    <td><?= ($editor['role'] ?? 'buddy') === 'owner' ? 'Eigenaar' : 'Buddy' ?></td>
+                    <td><?= (int)$editor['active'] === 1 ? 'Actief' : 'Inactief' ?></td>
+                    <td>
+                      <?php if (($editor['role'] ?? 'buddy') !== 'owner'): ?>
+                        <form method="post" class="inline">
+                          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+                          <input type="hidden" name="action" value="remove_buddy_scorer">
+                          <input type="hidden" name="buddy_scorer_id" value="<?= (int)$editor['id'] ?>">
+                          <button class="danger" type="submit">Verwijderen</button>
+                        </form>
+                      <?php endif; ?>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
+        <?php endif; ?>
+        <p class="muted">Buddy scorers kunnen na login dezelfde competitie en taken bewerken.</p>
+      </section>
+
+      <section class="card">
+        <h2>Waypoints</h2>
+        <form method="post" class="panel">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="add_waypoint">
+          <div class="grid">
+            <label>Naam
+              <input type="text" name="wp_name" required maxlength="120">
+            </label>
+            <label>Code
+              <input type="text" name="wp_code" maxlength="40">
+            </label>
+            <label>Latitude
+              <input type="number" name="wp_latitude" step="0.000001" required>
+            </label>
+            <label>Longitude
+              <input type="number" name="wp_longitude" step="0.000001" required>
+            </label>
+            <label>Hoogte (m)
+              <input type="number" name="wp_elevation_m" step="1">
+            </label>
+          </div>
+          <p><button type="submit">Waypoint toevoegen</button></p>
+        </form>
+
+        <p class="muted"><?= (int)count($waypoints) ?> waypoints geladen<?= $competition['waypoints_original_name'] ? ' uit ' . h($competition['waypoints_original_name']) : '' ?>.</p>
+        <?php if (!empty($competition['waypoints_path'])): ?>
+          <form method="post" class="inline">
+            <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+            <input type="hidden" name="action" value="reimport_waypoints">
+            <button class="secondary" type="submit">Waypoints opnieuw inlezen</button>
+            <span class="muted">Werkt bestaande waypoint-coordinaten bij uit het oorspronkelijke bestand.</span>
+          </form>
+        <?php endif; ?>
+        <?php if (!empty($waypoints)): ?>
+          <div class="waypoint-list">
+            <?php foreach ($waypoints as $wp): ?>
+              <span><?= h($wp['name']) ?> <small><?= h(app_format_compact_number($wp['latitude'], 5)) ?>, <?= h(app_format_compact_number($wp['longitude'], 5)) ?></small></span>
             <?php endforeach; ?>
-          </select>
-        </label>
-        <label>Type
-          <select name="scope">
-            <option value="open" <?= $competition['scope'] === 'open' ? 'selected' : '' ?>>Open competitie</option>
-            <option value="club" <?= $competition['scope'] === 'club' ? 'selected' : '' ?>>Clubcompetitie</option>
-            <option value="dutch_national_candidate" <?= $competition['scope'] === 'dutch_national_candidate' ? 'selected' : '' ?>>NK kandidaat</option>
-          </select>
-        </label>
-        <label>Status
-          <select name="status">
-            <option value="draft" <?= $competition['status'] === 'draft' ? 'selected' : '' ?>>Concept</option>
-            <option value="open" <?= $competition['status'] === 'open' ? 'selected' : '' ?>>Open</option>
-            <option value="closed" <?= $competition['status'] === 'closed' ? 'selected' : '' ?>>Gesloten</option>
-          </select>
-        </label>
-        <label>Locatie
-          <input type="text" name="location" value="<?= h($competition['location'] ?? '') ?>" maxlength="190">
-        </label>
-        <label class="check-row">
-          <input type="checkbox" name="is_public" <?= (int)$competition['is_public'] === 1 ? 'checked' : '' ?>> Publieke resultaten tonen
-        </label>
-      </div>
-      <p><button type="submit">Opslaan</button></p>
-    </form>
-  </section>
-
-  <section class="card">
-    <h2>Scorers</h2>
-    <form method="post" class="panel">
-      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-      <input type="hidden" name="action" value="add_buddy_scorer">
-      <div class="grid">
-        <label>Naam (optioneel)
-          <input type="text" name="buddy_name" maxlength="160">
-        </label>
-        <label>E-mail
-          <input type="email" name="buddy_email" required maxlength="190">
-        </label>
-      </div>
-      <p><button type="submit">Buddy scorer toevoegen</button></p>
-    </form>
-
-    <?php if (empty($editors)): ?>
-      <p class="muted">Nog geen scorers gekoppeld.</p>
+          </div>
+        <?php endif; ?>
+      </section>
     <?php else: ?>
-      <div class="table-responsive">
-        <table class="striped compact-table">
-          <thead>
-            <tr>
-              <th>Naam</th>
-              <th>E-mail</th>
-              <th>Rol</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php foreach ($editors as $editor): ?>
-              <tr>
-                <td><?= h($editor['name'] ?: '-') ?></td>
-                <td><?= h($editor['email']) ?></td>
-                <td><?= ($editor['role'] ?? 'buddy') === 'owner' ? 'Eigenaar' : 'Buddy' ?></td>
-                <td><?= (int)$editor['active'] === 1 ? 'Actief' : 'Inactief' ?></td>
-                <td>
-                  <?php if (($editor['role'] ?? 'buddy') !== 'owner'): ?>
-                    <form method="post" class="inline">
-                      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-                      <input type="hidden" name="action" value="remove_buddy_scorer">
-                      <input type="hidden" name="buddy_scorer_id" value="<?= (int)$editor['id'] ?>">
-                      <button class="danger" type="submit">Verwijderen</button>
-                    </form>
-                  <?php endif; ?>
-                </td>
-              </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
-      </div>
-    <?php endif; ?>
-    <p class="muted">Buddy scorers kunnen na login dezelfde competitie en taken bewerken.</p>
-  </section>
-
-  <section class="card">
-    <h2>Nieuwe taak</h2>
-    <form method="post">
-      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-      <input type="hidden" name="action" value="create_task">
-      <div class="grid">
-        <label>Taaknaam
-          <input type="text" name="task_name" required maxlength="190" placeholder="Taak 1">
-        </label>
-        <label>Taakdatum
-          <input type="date" name="task_date" value="<?= h($defaultDate) ?>" required>
-        </label>
-        <label>Venster open
-          <input type="datetime-local" name="window_open" value="<?= h($defaultOpen) ?>" required>
-        </label>
-        <label>Venster dicht
-          <input type="datetime-local" name="window_close" value="<?= h($defaultClose) ?>" required>
-        </label>
-        <label>Type
-          <select name="task_type">
-            <option value="race">Race</option>
-            <option value="time_trial">Time trial</option>
-          </select>
-        </label>
-        <label>Minimum afstand (km)
-          <input type="number" name="minimum_distance_km" step="0.1" value="5.0">
-        </label>
-        <label>Nominale afstand (km)
-          <input type="number" name="nominal_distance_km" step="0.1" value="50.0">
-        </label>
-        <label>Nominale tijd (min)
-          <input type="number" name="nominal_time_minutes" value="90" min="1">
-        </label>
-      </div>
-      <div class="checkbox-grid">
-        <label><input type="checkbox" name="use_distance_points" checked> Afstandspunten</label>
-        <label><input type="checkbox" name="use_time_points" checked> Tijdspunten</label>
-        <label><input type="checkbox" name="use_leading_points" checked> Leadingpunten</label>
-        <label><input type="checkbox" name="use_departure_points"> Departurepunten</label>
-        <label><input type="checkbox" name="use_arrival_position_points"> Arrival positiepunten</label>
-        <label><input type="checkbox" name="use_arrival_time_points"> Arrival tijdpunten</label>
-      </div>
-      <p><button type="submit">Taak aanmaken</button></p>
-    </form>
-  </section>
-
-  <section class="card">
-    <h2>Taken</h2>
-    <?php if (empty($tasks)): ?>
-      <p class="muted">Nog geen taken aangemaakt.</p>
-    <?php else: ?>
-      <div class="table-responsive">
-        <table class="striped">
-          <thead>
-            <tr>
-              <th>Datum</th>
-              <th>Taak</th>
-              <th>Type</th>
-              <th>Punten</th>
-              <th>Tracks</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php foreach ($tasks as $task): ?>
-              <tr>
-                <td><?= h($task['task_date']) ?></td>
-                <td><a href="task.php?id=<?= (int)$task['id'] ?>"><?= h($task['name']) ?></a></td>
-                <td><?= h($task['task_type']) ?></td>
-                <td><?= (int)$task['turnpoint_count'] ?></td>
-                <td><?= (int)$task['flight_count'] ?></td>
-                <td><?= h($task['status']) ?></td>
-              </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
-      </div>
-    <?php endif; ?>
-  </section>
-
-  <section class="card">
-    <h2>Waypoints</h2>
-    <form method="post" class="panel">
-      <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-      <input type="hidden" name="action" value="add_waypoint">
-      <div class="grid">
-        <label>Naam
-          <input type="text" name="wp_name" required maxlength="120">
-        </label>
-        <label>Code
-          <input type="text" name="wp_code" maxlength="40">
-        </label>
-        <label>Latitude
-          <input type="number" name="wp_latitude" step="0.000001" required>
-        </label>
-        <label>Longitude
-          <input type="number" name="wp_longitude" step="0.000001" required>
-        </label>
-        <label>Hoogte (m)
-          <input type="number" name="wp_elevation_m" step="1">
-        </label>
-      </div>
-      <p><button type="submit">Waypoint toevoegen</button></p>
-    </form>
-
-    <p class="muted"><?= (int)count($waypoints) ?> waypoints geladen<?= $competition['waypoints_original_name'] ? ' uit ' . h($competition['waypoints_original_name']) : '' ?>.</p>
-    <?php if (!empty($competition['waypoints_path'])): ?>
-      <form method="post" class="inline">
-        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-        <input type="hidden" name="action" value="reimport_waypoints">
-        <button class="secondary" type="submit">Waypoints opnieuw inlezen</button>
-        <span class="muted">Werkt bestaande waypoint-coordinaten bij uit het oorspronkelijke bestand.</span>
-      </form>
-    <?php endif; ?>
-    <?php if (!empty($waypoints)): ?>
-      <div class="waypoint-list">
-        <?php foreach ($waypoints as $wp): ?>
-          <span><?= h($wp['name']) ?> <small><?= h(app_format_compact_number($wp['latitude'], 5)) ?>, <?= h(app_format_compact_number($wp['longitude'], 5)) ?></small></span>
-        <?php endforeach; ?>
-      </div>
+      <section class="card">
+        <h2>Nieuwe taak</h2>
+        <form method="post">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="create_task">
+          <div class="grid">
+            <label>Taaknaam
+              <input type="text" name="task_name" required maxlength="190" placeholder="Taak 1">
+            </label>
+            <label>Taakdatum
+              <input type="date" name="task_date" value="<?= h($defaultDate) ?>" required>
+            </label>
+            <label>Venster open
+              <input type="datetime-local" name="window_open" value="<?= h($defaultOpen) ?>" required>
+            </label>
+            <label>Venster dicht
+              <input type="datetime-local" name="window_close" value="<?= h($defaultClose) ?>" required>
+            </label>
+            <label>Type
+              <select name="task_type">
+                <option value="race">Race</option>
+                <option value="time_trial">Time trial</option>
+              </select>
+            </label>
+            <label>Minimum afstand (km)
+              <input type="number" name="minimum_distance_km" step="0.1" value="5.0">
+            </label>
+            <label>Nominale afstand (km)
+              <input type="number" name="nominal_distance_km" step="0.1" value="50.0">
+            </label>
+            <label>Nominale tijd (min)
+              <input type="number" name="nominal_time_minutes" value="90" min="1">
+            </label>
+          </div>
+          <div class="checkbox-grid">
+            <label><input type="checkbox" name="use_distance_points" checked> Afstandspunten</label>
+            <label><input type="checkbox" name="use_time_points" checked> Tijdspunten</label>
+            <label><input type="checkbox" name="use_leading_points" checked> Leadingpunten</label>
+            <label><input type="checkbox" name="use_departure_points"> Departurepunten</label>
+            <label><input type="checkbox" name="use_arrival_position_points"> Arrival positiepunten</label>
+            <label><input type="checkbox" name="use_arrival_time_points"> Arrival tijdpunten</label>
+          </div>
+          <p><button type="submit">Taak aanmaken</button></p>
+        </form>
+      </section>
     <?php endif; ?>
   </section>
 </main>
