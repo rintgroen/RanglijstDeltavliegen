@@ -139,7 +139,7 @@ function app_public_nav_cluster(string $label, array $items, string $active, str
 }
 
 function app_public_nav(string $active = ''): void {
-    echo '<nav class="site-nav public-nav" aria-label="Publieke navigatie">';
+    echo '<nav class="site-nav public-nav" id="public-site-nav" aria-label="Publieke navigatie">';
     app_public_nav_cluster('', [
         'home' => ['Home', 'home.php'],
     ], $active);
@@ -265,6 +265,18 @@ function app_page_start(string $title, array $options = []): void {
     <span class="site-title"><?= h(app_site_name()) ?></span>
     <?php if (app_is_admin()): ?><span class="site-badge">Admin</span><?php endif; ?>
   </a>
+  <?php if ($showPublicNav): ?>
+    <button
+      class="public-nav-toggle"
+      type="button"
+      aria-controls="public-site-nav"
+      aria-expanded="false"
+      aria-label="Menu openen"
+      data-public-nav-toggle
+    >
+      <span class="public-nav-toggle-icon" aria-hidden="true"></span>
+    </button>
+  <?php endif; ?>
 </header>
 <?php
     if ($showPublicNav) {

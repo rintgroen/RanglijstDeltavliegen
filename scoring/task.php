@@ -20,7 +20,7 @@ if (!$task || !scoring_can_edit_competition($pdo, (int)$task['competition_id'], 
 }
 $competition = scoring_load_competition($pdo, (int)$task['competition_id']);
 $taskTabs = [
-    'settings' => '1. taak instellen',
+    'settings' => '1. Taak instellen en delen',
     'review' => '2. tracks controleren',
     'scoring' => '3. scoren en publiceren',
 ];
@@ -315,6 +315,9 @@ if (!empty($task['scoring_summary_json'])) {
 $taskMap = !empty($turnpoints) ? scoring_task_map_data($turnpoints) : null;
 $taskMapJson = '';
 $leafletAssets = '';
+$taskShareUrl = scoring_task_share_url($taskId);
+$taskSharePublicHref = '../public/task_board.php?id=' . (int)$taskId;
+$taskShareXctskHref = $taskSharePublicHref . '&download=xctsk';
 if ($taskMap) {
     $taskMapJson = json_encode(
         $taskMap,
@@ -522,6 +525,28 @@ app_page_start($task['name'] . ' - Scoring', [
       <?php endif; ?>
     </section>
   <?php endif; ?>
+
+  <section class="card task-share-admin-card">
+    <div class="section-header">
+      <div>
+        <h2>Taak delen</h2>
+        <p class="muted">Deel deze briefingpagina met piloten voor taakdetails, XCTSK-download en instrument QR-code.</p>
+      </div>
+      <?php if (count($turnpoints) >= 2): ?>
+        <p class="actions">
+          <a class="btn" href="<?= h($taskSharePublicHref) ?>" target="_blank" rel="noopener">Open briefingpagina</a>
+          <a class="btn secondary" href="<?= h($taskShareXctskHref) ?>">Download XCTSK</a>
+        </p>
+      <?php endif; ?>
+    </div>
+    <?php if (count($turnpoints) < 2): ?>
+      <p class="muted">Voeg minimaal twee taakpunten toe om een deelbare instrumenttaak te maken.</p>
+    <?php else: ?>
+      <label>Deellink
+        <input type="url" value="<?= h($taskShareUrl) ?>" readonly>
+      </label>
+    <?php endif; ?>
+  </section>
     </div>
 
     <div

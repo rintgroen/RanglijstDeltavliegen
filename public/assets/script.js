@@ -427,7 +427,47 @@
     });
   }
 
+  function setupPublicNavToggle() {
+    var button = document.querySelector('[data-public-nav-toggle]');
+    if (!button) {
+      return;
+    }
+
+    var navId = button.getAttribute('aria-controls');
+    var nav = navId ? document.getElementById(navId) : null;
+    if (!nav) {
+      return;
+    }
+
+    nav.classList.add('is-collapsible');
+
+    function setOpen(isOpen) {
+      nav.classList.toggle('is-open', isOpen);
+      button.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      button.setAttribute('aria-label', isOpen ? 'Menu sluiten' : 'Menu openen');
+    }
+
+    button.addEventListener('click', function () {
+      setOpen(button.getAttribute('aria-expanded') !== 'true');
+    });
+
+    nav.addEventListener('click', function (event) {
+      if (event.target.closest && event.target.closest('a')) {
+        setOpen(false);
+      }
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    });
+
+    setOpen(false);
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
+    setupPublicNavToggle();
     document.querySelectorAll('.memory-showcase').forEach(setupMemoryShowcase);
     document.querySelectorAll('[data-tabs]').forEach(setupTabs);
     document.querySelectorAll('.track-preview').forEach(setupTrackPreviewMap);

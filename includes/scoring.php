@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/app.php';
+require_once __DIR__ . '/qrcode.php';
 
 function scoring_timezone(): DateTimeZone {
     static $tz = null;
@@ -110,6 +111,218 @@ function scoring_site_base_url(): string {
 
 function scoring_absolute_url(string $path): string {
     return scoring_site_base_url() . '/' . ltrim($path, '/');
+}
+
+function scoring_task_share_path(int $taskId): string {
+    return 'public/task_board.php?id=' . $taskId;
+}
+
+function scoring_task_share_url(int $taskId): string {
+    return scoring_absolute_url(scoring_task_share_path($taskId));
+}
+
+function scoring_download_slug(string $value, string $fallback = 'download'): string {
+    $ascii = function_exists('iconv') ? @iconv('UTF-8', 'ASCII//TRANSLIT', $value) : false;
+    if ($ascii !== false) {
+        $value = $ascii;
+    }
+    $value = preg_replace('/[^A-Za-z0-9]+/', '-', $value) ?? '';
+    $value = strtolower(trim($value, '-'));
+    return $value !== '' ? substr($value, 0, 90) : $fallback;
+}
+
+function scoring_task_xctsk_filename(array $task): string {
+    $base = (string)($task['competition_name'] ?? 'competitie') . '-' . (string)($task['name'] ?? 'taak');
+    return scoring_download_slug($base, 'taak') . '.xctsk';
+}
+
+function scoring_xctsk_time(?string $utcSql): string {
+    if (!$utcSql) {
+        return '00:00:00Z';
+    }
+    $dt = new DateTimeImmutable($utcSql, scoring_utc_timezone());
+    return $dt->setTimezone(scoring_utc_timezone())->format('H:i:s') . 'Z';
+}
+
+function scoring_xctsk_gate_times(array $task, array $gates): array {
+    $times = [];
+    if ((string)($task['task_type'] ?? 'race') === 'race') {
+        foreach ($gates as $gate) {
+            if (!empty($gate['gate_time_at'])) {
+                $times[] = scoring_xctsk_time((string)$gate['gate_time_at']);
+            }
+        }
+    }
+    if (empty($times)) {
+        $times[] = scoring_xctsk_time((string)($task['window_open_at'] ?? ''));
+    }
+    return array_values(array_unique($times));
+}
+
+function scoring_xctsk_start_type(array $task): string {
+    return (string)($task['task_type'] ?? 'race') === 'time_trial' ? 'ELAPSED-TIME' : 'RACE';
+}
+
+function scoring_xctsk_start_type_code(array $task): int {
+    return scoring_xctsk_start_type($task) === 'ELAPSED-TIME' ? 2 : 1;
+}
+
+function scoring_xctsk_waypoint_name(array $turnpoint): string {
+    $code = trim((string)($turnpoint['code'] ?? ''));
+    if ($code !== '') {
+        return $code;
+    }
+    $name = trim((string)($turnpoint['name'] ?? 'Waypoint'));
+    return $name !== '' ? $name : 'Waypoint';
+}
+
+function scoring_xctsk_waypoint_description(array $turnpoint): string {
+    $name = trim((string)($turnpoint['name'] ?? ''));
+    $code = trim((string)($turnpoint['code'] ?? ''));
+    return $name !== '' && $code !== '' && strcasecmp($name, $code) !== 0 ? $name : '';
+}
+
+function scoring_xctsk_encode_num(int $num): string {
+    $value = $num << 1;
+    if ($num < 0) {
+        $value = ~$value;
+    }
+
+    $encoded = '';
+    while ($value > 0x1F) {
+        $encoded .= chr((($value & 0x1F) | 0x20) + 63);
+        $value >>= 5;
+    }
+    return $encoded . chr($value + 63);
+}
+
+function scoring_xctsk_encode_turnpoint(array $turnpoint): string {
+    $altitude = $turnpoint['elevation_m'] !== null && $turnpoint['elevation_m'] !== ''
+        ? (int)round((float)$turnpoint['elevation_m'])
+        : 0;
+    return scoring_xctsk_encode_num((int)round((float)$turnpoint['longitude'] * 100000))
+        . scoring_xctsk_encode_num((int)round((float)$turnpoint['latitude'] * 100000))
+        . scoring_xctsk_encode_num($altitude)
+        . scoring_xctsk_encode_num(max(1, (int)($turnpoint['radius_m'] ?? 400)));
+}
+
+function scoring_build_task_xctsk_document(array $task, array $turnpoints, array $gates): array {
+    [$sssIndex, $essIndex] = scoring_speed_section_indices($turnpoints);
+    $xctskTurnpoints = [];
+    foreach ($turnpoints as $idx => $turnpoint) {
+        $waypoint = [
+            'name' => scoring_xctsk_waypoint_name($turnpoint),
+            'lat' => round((float)$turnpoint['latitude'], 7),
+            'lon' => round((float)$turnpoint['longitude'], 7),
+            'altSmoothed' => $turnpoint['elevation_m'] !== null && $turnpoint['elevation_m'] !== ''
+                ? (int)round((float)$turnpoint['elevation_m'])
+                : 0,
+        ];
+        $description = scoring_xctsk_waypoint_description($turnpoint);
+        if ($description !== '') {
+            $waypoint['description'] = $description;
+        }
+
+        $row = [
+            'radius' => max(1, (int)($turnpoint['radius_m'] ?? 400)),
+            'waypoint' => $waypoint,
+        ];
+        if ($idx === $sssIndex) {
+            $row = ['type' => 'SSS'] + $row;
+        } elseif ($idx === $essIndex) {
+            $row = ['type' => 'ESS'] + $row;
+        }
+        $xctskTurnpoints[] = $row;
+    }
+
+    return [
+        'taskType' => 'CLASSIC',
+        'version' => 1,
+        'earthModel' => 'WGS84',
+        'turnpoints' => $xctskTurnpoints,
+        'takeoff' => [
+            'timeOpen' => scoring_xctsk_time((string)($task['window_open_at'] ?? '')),
+            'timeClose' => scoring_xctsk_time((string)($task['window_close_at'] ?? '')),
+        ],
+        'sss' => [
+            'type' => scoring_xctsk_start_type($task),
+            'direction' => 'EXIT',
+            'timeGates' => scoring_xctsk_gate_times($task, $gates),
+            'timeClose' => scoring_xctsk_time((string)($task['window_close_at'] ?? '')),
+        ],
+        'goal' => [
+            'type' => 'CYLINDER',
+            'deadline' => scoring_xctsk_time((string)($task['window_close_at'] ?? '')),
+        ],
+    ];
+}
+
+function scoring_build_task_xctsk_qr_document(array $task, array $turnpoints, array $gates): array {
+    [$sssIndex, $essIndex] = scoring_speed_section_indices($turnpoints);
+    $xctskTurnpoints = [];
+    foreach ($turnpoints as $idx => $turnpoint) {
+        $row = [
+            'z' => scoring_xctsk_encode_turnpoint($turnpoint),
+            'n' => scoring_xctsk_waypoint_name($turnpoint),
+        ];
+        $description = scoring_xctsk_waypoint_description($turnpoint);
+        if ($description !== '') {
+            $row['d'] = $description;
+        }
+        if ($idx === $sssIndex) {
+            $row['t'] = 2;
+        } elseif ($idx === $essIndex) {
+            $row['t'] = 3;
+        }
+        $xctskTurnpoints[] = $row;
+    }
+
+    return [
+        'taskType' => 'CLASSIC',
+        'version' => 2,
+        't' => $xctskTurnpoints,
+        's' => [
+            'g' => scoring_xctsk_gate_times($task, $gates),
+            'd' => 2,
+            't' => scoring_xctsk_start_type_code($task),
+        ],
+        'g' => [
+            'd' => scoring_xctsk_time((string)($task['window_close_at'] ?? '')),
+            't' => 2,
+        ],
+        'e' => 0,
+        'to' => scoring_xctsk_time((string)($task['window_open_at'] ?? '')),
+        'tc' => scoring_xctsk_time((string)($task['window_close_at'] ?? '')),
+    ];
+}
+
+function scoring_json_encode_or_fail(array $value): string {
+    $json = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        throw new RuntimeException('Taak kon niet als XCTSK worden opgebouwd.');
+    }
+    return $json;
+}
+
+function scoring_build_task_xctsk_json(array $task, array $turnpoints, array $gates): string {
+    return scoring_json_encode_or_fail(scoring_build_task_xctsk_document($task, $turnpoints, $gates));
+}
+
+function scoring_build_task_xctsk_qr_payload(array $task, array $turnpoints, array $gates): string {
+    $json = scoring_json_encode_or_fail(scoring_build_task_xctsk_qr_document($task, $turnpoints, $gates));
+    $payload = 'XCTSK:' . $json;
+    if (strlen($payload) > 1800 && function_exists('gzcompress')) {
+        $compressed = 'XCTSKZ:' . base64_encode(gzcompress($json, 9));
+        if (strlen($compressed) < strlen($payload)) {
+            return $compressed;
+        }
+    }
+    return $payload;
+}
+
+function scoring_task_qr_svg(array $task, array $turnpoints, array $gates): string {
+    $payload = scoring_build_task_xctsk_qr_payload($task, $turnpoints, $gates);
+    return AppQrCode::svg($payload);
 }
 
 function scoring_set_mail_error(string $message): void {
