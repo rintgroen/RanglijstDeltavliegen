@@ -19,7 +19,7 @@ application.
 - CSV competition result upload, export, and deletion.
 - Visitor memories for competitions, with admin moderation.
 - Separate competition scoring section for scorer-managed tasks, IGC uploads,
-  LiveTrack24 candidate collection, review/exclusion, scoring, and published
+  Flymaster replay candidate scouting, review/exclusion, scoring, and published
   results. These scored competitions are stored in separate `rankings_scoring_*`
   tables and do not affect the Dutch ranking unless their results are manually
   uploaded through the existing CSV workflow.
@@ -95,8 +95,8 @@ index.php           Front controller redirecting to the public home page
    `CREATE TABLE IF NOT EXISTS`, so new scoring support tables are added without
    recreating existing data.
 
-   The LiveTrack24 track collection pages also run guarded table/column checks
-   when used. If the web database user cannot create or alter scoring tables,
+   The scoring pages also run guarded table/column checks when used. If the web
+   database user cannot create or alter scoring tables,
    apply the scoring schema changes with a database admin user first.
 
 5. Make uploaded memory photos writable by the web server.
@@ -170,24 +170,30 @@ Pilots upload IGC files at `public/track_upload.php` with only their name,
 e-mail address, and tracklog. Tracklogs are matched to tasks later by time window
 and task area.
 
-Pilots can also manage a persistent track collection profile at
+Pilots can also manage a persistent track profile at
 `public/track_profile.php`. The profile uses a magic link sent to their e-mail
-address, stores their score display name and e-mail address, and lets them opt in
-or out of automatic LiveTrack24 collection. The app stores the public
-LiveTrack24 username, not a LiveTrack24 password.
+address and stores their score display name, e-mail address, Flymaster serial
+number, and consent for Flymaster replay collection.
 
-On a task review page, scorers can use `LiveTrack24 zoeken` to check opted-in
-profiles for public LiveTrack24 tracks near the task time window and task area.
-Imported LiveTrack24 IGC files are added as candidate tracklogs beside manual
-uploads. The scorer still decides which track is used for scoring.
+On a task review page, scorers can use `Flymaster zoeken` to scout public
+Flymaster playback for opted-in device serials around the task time window and
+task area. Matching traces are reconstructed as candidate IGC-like tracklogs
+beside manual uploads. These reconstructions are a convenience source, not a
+replacement for an original instrument IGC when the pilot or scorer wants the
+authoritative file. Flymaster group `1` is used by default; set
+`SCORING_FLYMASTER_GROUP_ID` in `config.php` if a different public group should
+be scanned. Anonymous public discovery via Flymaster's replay WebSocket is off by
+default because many shared hosts block outbound port `8081`; set
+`SCORING_FLYMASTER_PUBLIC_SCOUT` to `true` only on hosting where that outbound
+connection works.
 
 The task review screen has a pilot list beside a single-pilot review panel.
 Within each pilot group, the scorer chooses exclude, ABS, DNF, minimum distance,
 or one selected track. Other track candidates are kept as alternatives and
 excluded from scoring. The task/track map is loaded only for the active pilot
 when `Use track` is selected.
-Scoring uses the reviewed rows only; finding uploads and LiveTrack24 candidates
-is an explicit review step.
+Scoring uses the reviewed rows only; finding uploads and Flymaster candidates is
+an explicit review step.
 
 The scoring engine is isolated in `includes/scoring.php` and is labelled
 `GAP2025`. It implements the first operational pass for task evaluation, point
@@ -239,7 +245,8 @@ the complete formula.
 - Ensure `public/uploads/memories/` is writable if visitors can upload memory
   photos.
 - Ensure `public/uploads/scoring/` can be created/written by the web server if
-  scorer waypoints, pilot IGC uploads, or LiveTrack24 imports are enabled.
+  scorer waypoints, pilot IGC uploads, or Flymaster replay reconstructions are
+  enabled.
 - Use `ADMIN_PASSWORD_HASH` for new installs instead of the legacy
   `ADMIN_PASSWORD` fallback.
 

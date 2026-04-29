@@ -78,9 +78,12 @@ app_page_start(app_site_name() . ' - Home', [
 ?>
 <main>
   <section class="home-hero">
-    <div class="kicker">Nederlandse ranglijst</div>
-    <h1>Ranglijst Deltavliegen</h1>
-    <p class="muted">Een overzicht van prestaties in Klasse 1 en Sportklasse, gebaseerd op NK-resultaten en WPRS-punten.</p>
+    <div class="home-hero-copy">
+      <div class="kicker">Nederlandse ranglijst</div>
+      <h1>Ranglijst Deltavliegen</h1>
+      <p class="muted">Een overzicht van prestaties in Klasse 1 en Sportklasse, gebaseerd op NK-resultaten en WPRS-punten.</p>
+    </div>
+    <img class="home-hero-mascot" src="<?= h(app_mascot_logo_asset()) ?>" alt="" width="176" height="176" decoding="async" fetchpriority="high">
   </section>
 
   <section class="tiles home-grid" aria-label="Overzicht">

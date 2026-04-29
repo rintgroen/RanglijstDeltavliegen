@@ -633,12 +633,19 @@ function scoring_ensure_track_collection_tables(PDO $pdo): void {
           livetrack24_enabled_at DATETIME DEFAULT NULL,
           livetrack24_disabled_at DATETIME DEFAULT NULL,
           last_livetrack24_check_at DATETIME DEFAULT NULL,
+          flymaster_serial VARCHAR(20) DEFAULT NULL,
+          flymaster_enabled TINYINT(1) NOT NULL DEFAULT 0,
+          flymaster_enabled_at DATETIME DEFAULT NULL,
+          flymaster_disabled_at DATETIME DEFAULT NULL,
+          last_flymaster_check_at DATETIME DEFAULT NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
           PRIMARY KEY (id),
           UNIQUE KEY uq_rankings_track_collection_profiles_email (email),
           KEY idx_rankings_track_collection_profiles_lt24 (livetrack24_username),
-          KEY idx_rankings_track_collection_profiles_enabled (livetrack24_enabled, livetrack24_username)
+          KEY idx_rankings_track_collection_profiles_enabled (livetrack24_enabled, livetrack24_username),
+          KEY idx_rankings_track_collection_profiles_flymaster (flymaster_serial),
+          KEY idx_rankings_track_collection_profiles_flymaster_enabled (flymaster_enabled, flymaster_serial)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
     );
 
@@ -679,6 +686,28 @@ function scoring_ensure_track_collection_tables(PDO $pdo): void {
     }
     if (!scoring_table_index_exists($pdo, 'rankings_scoring_tracklogs', 'idx_rankings_scoring_tracklogs_hash_email')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tracklogs ADD KEY idx_rankings_scoring_tracklogs_hash_email (file_hash, pilot_email)', [1061], ['42000']);
+    }
+
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'flymaster_serial')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN flymaster_serial VARCHAR(20) DEFAULT NULL AFTER last_livetrack24_check_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'flymaster_enabled')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN flymaster_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER flymaster_serial', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'flymaster_enabled_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN flymaster_enabled_at DATETIME DEFAULT NULL AFTER flymaster_enabled', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'flymaster_disabled_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN flymaster_disabled_at DATETIME DEFAULT NULL AFTER flymaster_enabled_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'last_flymaster_check_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN last_flymaster_check_at DATETIME DEFAULT NULL AFTER flymaster_disabled_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_index_exists($pdo, 'rankings_track_collection_profiles', 'idx_rankings_track_collection_profiles_flymaster')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD KEY idx_rankings_track_collection_profiles_flymaster (flymaster_serial)', [1061], ['42000']);
+    }
+    if (!scoring_table_index_exists($pdo, 'rankings_track_collection_profiles', 'idx_rankings_track_collection_profiles_flymaster_enabled')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD KEY idx_rankings_track_collection_profiles_flymaster_enabled (flymaster_enabled, flymaster_serial)', [1061], ['42000']);
     }
 }
 
@@ -828,12 +857,12 @@ function scoring_consume_track_collection_login_token(PDO $pdo, string $token): 
 function scoring_send_track_collection_magic_link(string $email, string $link): bool {
     $subject = app_site_name() . ' trackprofiel';
     $text = "Hallo,\n\nGebruik deze link om je trackprofiel te openen:\n\n" . $link
-        . "\n\nHier kun je automatische LiveTrack24 trackcollectie aan- of uitzetten. Deze link verloopt automatisch.\n";
+        . "\n\nHier kun je je naam, e-mailadres en Flymaster toestemming voor competitie scoring beheren. Deze link verloopt automatisch.\n";
     $html = scoring_html_email_shell('Je trackprofiel', ''
         . '<p style="margin:0 0 14px;">Hallo,</p>'
         . '<p style="margin:0 0 18px;">Met onderstaande knop open je je trackprofiel voor competitie scoring.</p>'
         . '<p style="margin:0 0 18px;"><a href="' . h($link) . '" style="background:#0f6fa8;border-radius:6px;color:#ffffff;display:inline-block;font-weight:bold;padding:11px 16px;text-decoration:none;">Trackprofiel openen</a></p>'
-        . '<p style="margin:0 0 12px;color:#516779;">Hier kun je automatische LiveTrack24 trackcollectie aan- of uitzetten. Deze link verloopt automatisch.</p>'
+        . '<p style="margin:0 0 12px;color:#516779;">Hier kun je je naam, e-mailadres en Flymaster toestemming voor competitie scoring beheren. Deze link verloopt automatisch.</p>'
         . '<p style="margin:0;color:#516779;font-size:13px;">Werkt de knop niet? Open deze link:<br><a href="' . h($link) . '">' . h($link) . '</a></p>');
     return scoring_send_email($email, $subject, $text, $html, 'track-profile-login');
 }
@@ -907,172 +936,6 @@ function scoring_http_get(string $url, int $timeoutSeconds = 15, string $accept 
     return $body;
 }
 
-function scoring_livetrack24_base_url(): string {
-    return 'https://www.livetrack24.com';
-}
-
-function scoring_livetrack24_username_from_input(string $input): string {
-    $input = trim($input);
-    if ($input === '') {
-        return '';
-    }
-    if (preg_match('~^https?://~i', $input)) {
-        $parts = parse_url($input);
-        $path = isset($parts['path']) ? trim((string)$parts['path'], '/') : '';
-        $segments = $path !== '' ? explode('/', $path) : [];
-        $userIndex = array_search('user', $segments, true);
-        if ($userIndex !== false && isset($segments[$userIndex + 1])) {
-            $input = rawurldecode((string)$segments[$userIndex + 1]);
-        } elseif (!empty($segments)) {
-            $input = rawurldecode((string)end($segments));
-        }
-    }
-    $input = trim($input);
-    if ($input === '') {
-        return '';
-    }
-    if (strlen($input) > 120 || preg_match('/[\s\/?#&<>]/', $input)) {
-        throw new RuntimeException('Vul een geldige LiveTrack24 gebruikersnaam of profiel-URL in.');
-    }
-    return $input;
-}
-
-function scoring_livetrack24_profile_url(string $username): string {
-    return scoring_livetrack24_base_url() . '/user/' . rawurlencode($username);
-}
-
-function scoring_livetrack24_track_url(string $trackId): string {
-    return scoring_livetrack24_base_url() . '/track/' . rawurlencode($trackId);
-}
-
-function scoring_livetrack24_find_username(string $username): ?array {
-    $username = scoring_livetrack24_username_from_input($username);
-    if ($username === '') {
-        return null;
-    }
-    $url = scoring_livetrack24_base_url() . '/EXT_pilot_functions.php?op=findPilot&format=json&q=' . rawurlencode($username);
-    $body = scoring_http_get($url, 12, 'application/json,text/plain,*/*');
-    $decoded = json_decode($body, true);
-    if (!is_array($decoded)) {
-        return null;
-    }
-    foreach ($decoded as $candidate) {
-        if (!is_array($candidate) || !isset($candidate['id'])) {
-            continue;
-        }
-        $id = trim((string)$candidate['id']);
-        if ($id !== '' && strcasecmp($id, $username) === 0) {
-            return [
-                'username' => $id,
-                'label' => trim(strip_tags((string)($candidate['name'] ?? $id))),
-            ];
-        }
-    }
-    return null;
-}
-
-function scoring_livetrack24_list_public_tracks(string $username, string $fromDate, string $toDate): array {
-    $username = scoring_livetrack24_username_from_input($username);
-    if ($username === '') {
-        return ['tracks' => [], 'user_id' => null, 'url' => ''];
-    }
-    $url = scoring_livetrack24_profile_url($username)
-        . '/tracks/from/' . rawurlencode($fromDate)
-        . '/to/' . rawurlencode($toDate);
-    $html = scoring_http_get($url, 20, 'text/html,*/*');
-    $trackIds = [];
-    if (preg_match_all('/data-trackID=["\'](\d+)["\']/i', $html, $m)) {
-        foreach ($m[1] as $trackId) {
-            $trackIds[(string)$trackId] = (string)$trackId;
-        }
-    }
-    if (preg_match_all('~href=["\']/track/(\d+)["\']~i', $html, $m)) {
-        foreach ($m[1] as $trackId) {
-            $trackIds[(string)$trackId] = (string)$trackId;
-        }
-    }
-
-    $userId = null;
-    if (preg_match('/data-userID=["\'](\d+)["\']/i', $html, $m)) {
-        $userId = (int)$m[1];
-    } elseif (preg_match('/id=["\']posted_on["\'][^>]*value=["\'](\d+)["\']/i', $html, $m)) {
-        $userId = (int)$m[1];
-    }
-
-    return [
-        'tracks' => array_values($trackIds),
-        'user_id' => $userId,
-        'url' => $url,
-    ];
-}
-
-function scoring_livetrack24_fetch_track_info(string $trackId): ?array {
-    $trackId = trim($trackId);
-    if ($trackId === '' || !ctype_digit($trackId)) {
-        return null;
-    }
-    $url = scoring_livetrack24_base_url() . '/EXT_flight_v3.php?op=flight_info&flightID=' . rawurlencode($trackId);
-    $body = scoring_http_get($url, 20, 'application/json,text/plain,*/*');
-    $decoded = json_decode($body, true);
-    if (!is_array($decoded)) {
-        return null;
-    }
-    if (trim((string)($decoded['username'] ?? '')) === '' || (string)($decoded['username'] ?? '') === 'null') {
-        return null;
-    }
-    $points = $decoded['points'] ?? [];
-    if (!is_array($points) || empty($points['lat']) || !is_array($points['lat'])) {
-        return null;
-    }
-    return $decoded;
-}
-
-function scoring_livetrack24_download_igc_to_temp(string $trackId, string $username): string {
-    $trackId = trim($trackId);
-    if ($trackId === '' || !ctype_digit($trackId)) {
-        throw new RuntimeException('Ongeldig LiveTrack24 track-ID.');
-    }
-    $url = scoring_livetrack24_base_url() . '/leo_live.php?op=igc&trackID=' . rawurlencode($trackId);
-    if ($username !== '') {
-        $url .= '&user=' . rawurlencode($username);
-    }
-    $body = scoring_http_get($url, 30, 'text/plain,application/octet-stream,*/*');
-    if (trim($body) === '' || !preg_match('/^A/m', $body) || !preg_match('/^B\d{6}/m', $body)) {
-        throw new RuntimeException('LiveTrack24 gaf geen bruikbaar IGC-bestand terug.');
-    }
-    $tmp = tempnam(sys_get_temp_dir(), 'lt24_');
-    if ($tmp === false || @file_put_contents($tmp, $body) === false) {
-        throw new RuntimeException('Tijdelijk LiveTrack24-bestand kon niet worden opgeslagen.');
-    }
-    return $tmp;
-}
-
-function scoring_livetrack24_track_matches_task(array $trackInfo, array $task, array $taskBbox): bool {
-    $first = isset($trackInfo['firstPointTM']) ? (int)$trackInfo['firstPointTM'] : 0;
-    $last = isset($trackInfo['lastPointTM']) ? (int)$trackInfo['lastPointTM'] : 0;
-    if ($first <= 0 || $last <= 0) {
-        return false;
-    }
-    $openTs = (new DateTimeImmutable((string)$task['window_open_at'], scoring_utc_timezone()))->getTimestamp();
-    $closeTs = (new DateTimeImmutable((string)$task['window_close_at'], scoring_utc_timezone()))->getTimestamp();
-    if ($first > $closeTs || $last < $openTs) {
-        return false;
-    }
-
-    $minLat = isset($trackInfo['min_lat']) ? (float)$trackInfo['min_lat'] : 1000.0;
-    $maxLat = isset($trackInfo['max_lat']) ? (float)$trackInfo['max_lat'] : -1000.0;
-    $minLon = isset($trackInfo['min_lon']) ? (float)$trackInfo['min_lon'] : 1000.0;
-    $maxLon = isset($trackInfo['max_lon']) ? (float)$trackInfo['max_lon'] : -1000.0;
-    if ($minLat > 90 || $maxLat < -90 || $minLon > 180 || $maxLon < -180) {
-        return false;
-    }
-
-    return $maxLat >= (float)$taskBbox['min_lat']
-        && $minLat <= (float)$taskBbox['max_lat']
-        && $maxLon >= (float)$taskBbox['min_lon']
-        && $minLon <= (float)$taskBbox['max_lon'];
-}
-
 function scoring_find_tracklog_by_source(PDO $pdo, string $source, string $externalId): ?array {
     if (!scoring_tracklog_source_columns_available($pdo)) {
         return null;
@@ -1105,112 +968,722 @@ function scoring_link_tracklog_to_task(PDO $pdo, array $task, int $tracklogId, s
     return $flightId;
 }
 
-function scoring_import_livetrack24_for_task(PDO $pdo, array $task, array $turnpoints): array {
+function scoring_flymaster_epoch_offset(): int {
+    return 946684800;
+}
+
+function scoring_flymaster_group_id(): int {
+    return defined('SCORING_FLYMASTER_GROUP_ID') ? max(1, (int)SCORING_FLYMASTER_GROUP_ID) : 1;
+}
+
+function scoring_flymaster_public_scout_enabled(): bool {
+    return defined('SCORING_FLYMASTER_PUBLIC_SCOUT') && (bool)SCORING_FLYMASTER_PUBLIC_SCOUT;
+}
+
+function scoring_flymaster_normalize_serial(string $serial): string {
+    $serial = trim($serial);
+    if ($serial === '') {
+        return '';
+    }
+    if (!preg_match('/^\d{3,12}$/', $serial)) {
+        throw new RuntimeException('Vul een geldig Flymaster serienummer in.');
+    }
+    return $serial;
+}
+
+function scoring_flymaster_relative_to_unix(int $relativeSeconds): int {
+    return $relativeSeconds + scoring_flymaster_epoch_offset();
+}
+
+function scoring_flymaster_unix_to_relative(int $unixSeconds): int {
+    return $unixSeconds - scoring_flymaster_epoch_offset();
+}
+
+function scoring_msgpack_read_uint(string $data, int &$offset, int $bytes): int {
+    if ($offset + $bytes > strlen($data)) {
+        throw new RuntimeException('Onvolledige Flymaster data.');
+    }
+    $value = 0;
+    for ($i = 0; $i < $bytes; $i++) {
+        $value = ($value << 8) | ord($data[$offset++]);
+    }
+    return $value;
+}
+
+function scoring_msgpack_read_string(string $data, int &$offset, int $length): string {
+    if ($offset + $length > strlen($data)) {
+        throw new RuntimeException('Onvolledige Flymaster data.');
+    }
+    $value = substr($data, $offset, $length);
+    $offset += $length;
+    return $value;
+}
+
+function scoring_msgpack_read_value(string $data, int &$offset) {
+    if ($offset >= strlen($data)) {
+        throw new RuntimeException('Onvolledige Flymaster data.');
+    }
+    $type = ord($data[$offset++]);
+    if ($type <= 0x7f) {
+        return $type;
+    }
+    if ($type >= 0xe0) {
+        return $type - 256;
+    }
+    if (($type & 0xf0) === 0x80) {
+        $count = $type & 0x0f;
+        $map = [];
+        for ($i = 0; $i < $count; $i++) {
+            $key = scoring_msgpack_read_value($data, $offset);
+            $map[(string)$key] = scoring_msgpack_read_value($data, $offset);
+        }
+        return $map;
+    }
+    if (($type & 0xf0) === 0x90) {
+        $count = $type & 0x0f;
+        $list = [];
+        for ($i = 0; $i < $count; $i++) {
+            $list[] = scoring_msgpack_read_value($data, $offset);
+        }
+        return $list;
+    }
+    if (($type & 0xe0) === 0xa0) {
+        return scoring_msgpack_read_string($data, $offset, $type & 0x1f);
+    }
+
+    switch ($type) {
+        case 0xc0:
+            return null;
+        case 0xc2:
+            return false;
+        case 0xc3:
+            return true;
+        case 0xc4:
+            return scoring_msgpack_read_string($data, $offset, scoring_msgpack_read_uint($data, $offset, 1));
+        case 0xc5:
+            return scoring_msgpack_read_string($data, $offset, scoring_msgpack_read_uint($data, $offset, 2));
+        case 0xc6:
+            return scoring_msgpack_read_string($data, $offset, scoring_msgpack_read_uint($data, $offset, 4));
+        case 0xca:
+            $bytes = scoring_msgpack_read_string($data, $offset, 4);
+            $unpacked = unpack('G', $bytes);
+            return (float)$unpacked[1];
+        case 0xcb:
+            $bytes = scoring_msgpack_read_string($data, $offset, 8);
+            $unpacked = unpack('E', $bytes);
+            return (float)$unpacked[1];
+        case 0xcc:
+            return scoring_msgpack_read_uint($data, $offset, 1);
+        case 0xcd:
+            return scoring_msgpack_read_uint($data, $offset, 2);
+        case 0xce:
+            return scoring_msgpack_read_uint($data, $offset, 4);
+        case 0xcf:
+            $hi = scoring_msgpack_read_uint($data, $offset, 4);
+            $lo = scoring_msgpack_read_uint($data, $offset, 4);
+            return ($hi * 4294967296) + $lo;
+        case 0xd0:
+            $value = scoring_msgpack_read_uint($data, $offset, 1);
+            return $value >= 128 ? $value - 256 : $value;
+        case 0xd1:
+            $value = scoring_msgpack_read_uint($data, $offset, 2);
+            return $value >= 32768 ? $value - 65536 : $value;
+        case 0xd2:
+            $value = scoring_msgpack_read_uint($data, $offset, 4);
+            return $value >= 2147483648 ? $value - 4294967296 : $value;
+        case 0xd3:
+            $hi = scoring_msgpack_read_uint($data, $offset, 4);
+            $lo = scoring_msgpack_read_uint($data, $offset, 4);
+            if ($hi & 0x80000000) {
+                $hi = (~$hi) & 0xffffffff;
+                $lo = (~$lo) & 0xffffffff;
+                return -(($hi * 4294967296) + $lo + 1);
+            }
+            return ($hi * 4294967296) + $lo;
+        case 0xd9:
+            return scoring_msgpack_read_string($data, $offset, scoring_msgpack_read_uint($data, $offset, 1));
+        case 0xda:
+            return scoring_msgpack_read_string($data, $offset, scoring_msgpack_read_uint($data, $offset, 2));
+        case 0xdb:
+            return scoring_msgpack_read_string($data, $offset, scoring_msgpack_read_uint($data, $offset, 4));
+        case 0xdc:
+            $count = scoring_msgpack_read_uint($data, $offset, 2);
+            $list = [];
+            for ($i = 0; $i < $count; $i++) {
+                $list[] = scoring_msgpack_read_value($data, $offset);
+            }
+            return $list;
+        case 0xdd:
+            $count = scoring_msgpack_read_uint($data, $offset, 4);
+            $list = [];
+            for ($i = 0; $i < $count; $i++) {
+                $list[] = scoring_msgpack_read_value($data, $offset);
+            }
+            return $list;
+        case 0xde:
+            $count = scoring_msgpack_read_uint($data, $offset, 2);
+            $map = [];
+            for ($i = 0; $i < $count; $i++) {
+                $key = scoring_msgpack_read_value($data, $offset);
+                $map[(string)$key] = scoring_msgpack_read_value($data, $offset);
+            }
+            return $map;
+        case 0xdf:
+            $count = scoring_msgpack_read_uint($data, $offset, 4);
+            $map = [];
+            for ($i = 0; $i < $count; $i++) {
+                $key = scoring_msgpack_read_value($data, $offset);
+                $map[(string)$key] = scoring_msgpack_read_value($data, $offset);
+            }
+            return $map;
+    }
+
+    throw new RuntimeException('Onbekend Flymaster dataformaat.');
+}
+
+function scoring_msgpack_decode(string $data) {
+    $offset = 0;
+    return scoring_msgpack_read_value($data, $offset);
+}
+
+function scoring_flymaster_websocket_frame(string $payload): string {
+    $length = strlen($payload);
+    $header = chr(0x81);
+    if ($length < 126) {
+        $header .= chr(0x80 | $length);
+    } elseif ($length <= 65535) {
+        $header .= chr(0x80 | 126) . pack('n', $length);
+    } else {
+        $header .= chr(0x80 | 127) . pack('NN', 0, $length);
+    }
+    $mask = random_bytes(4);
+    $masked = '';
+    for ($i = 0; $i < $length; $i++) {
+        $masked .= $payload[$i] ^ $mask[$i % 4];
+    }
+    return $header . $mask . $masked;
+}
+
+function scoring_flymaster_extract_websocket_messages(string &$buffer): array {
+    $messages = [];
+    while (strlen($buffer) >= 2) {
+        $b0 = ord($buffer[0]);
+        $b1 = ord($buffer[1]);
+        $opcode = $b0 & 0x0f;
+        $masked = ($b1 & 0x80) !== 0;
+        $length = $b1 & 0x7f;
+        $offset = 2;
+        if ($length === 126) {
+            if (strlen($buffer) < 4) {
+                break;
+            }
+            $length = unpack('n', substr($buffer, 2, 2))[1];
+            $offset = 4;
+        } elseif ($length === 127) {
+            if (strlen($buffer) < 10) {
+                break;
+            }
+            $parts = unpack('Nhi/Nlo', substr($buffer, 2, 8));
+            $length = ((int)$parts['hi'] * 4294967296) + (int)$parts['lo'];
+            $offset = 10;
+        }
+        if ($masked) {
+            if (strlen($buffer) < $offset + 4) {
+                break;
+            }
+            $mask = substr($buffer, $offset, 4);
+            $offset += 4;
+        } else {
+            $mask = '';
+        }
+        if (strlen($buffer) < $offset + $length) {
+            break;
+        }
+        $payload = substr($buffer, $offset, $length);
+        $buffer = substr($buffer, $offset + $length);
+        if ($masked) {
+            $unmasked = '';
+            for ($i = 0; $i < $length; $i++) {
+                $unmasked .= $payload[$i] ^ $mask[$i % 4];
+            }
+            $payload = $unmasked;
+        }
+        if ($opcode === 1) {
+            $decoded = json_decode($payload, true);
+            if (is_array($decoded)) {
+                $messages[] = $decoded;
+            }
+        } elseif ($opcode === 2) {
+            $decoded = scoring_msgpack_decode($payload);
+            if (is_array($decoded)) {
+                $messages[] = $decoded;
+            }
+        } elseif ($opcode === 8) {
+            break;
+        }
+    }
+    return $messages;
+}
+
+function scoring_flymaster_websocket_events(int $groupId, int $relativeTime, int $timeoutSeconds = 8, int $maxEvents = 6): array {
+    $host = 'lb.flymaster.net';
+    $socket = @stream_socket_client(
+        'tls://' . $host . ':8081',
+        $errno,
+        $errstr,
+        min(10, $timeoutSeconds),
+        STREAM_CLIENT_CONNECT,
+        stream_context_create(['ssl' => ['SNI_enabled' => true, 'peer_name' => $host]])
+    );
+    if (!$socket) {
+        throw new RuntimeException('Flymaster playback kon niet worden geopend' . ($errstr ? ': ' . $errstr : '') . '.');
+    }
+
+    try {
+        stream_set_timeout($socket, min(5, $timeoutSeconds));
+        $key = base64_encode(random_bytes(16));
+        $headers = "GET / HTTP/1.1\r\n"
+            . "Host: " . $host . ":8081\r\n"
+            . "Upgrade: websocket\r\n"
+            . "Connection: Upgrade\r\n"
+            . "Sec-WebSocket-Key: " . $key . "\r\n"
+            . "Sec-WebSocket-Version: 13\r\n"
+            . "Origin: https://lt.flymaster.net\r\n"
+            . "User-Agent: Mozilla/5.0 (compatible; RanglijstDeltavliegen/1.0)\r\n\r\n";
+        fwrite($socket, $headers);
+
+        $headerBuffer = '';
+        while (strpos($headerBuffer, "\r\n\r\n") === false && strlen($headerBuffer) < 8192) {
+            $chunk = fread($socket, 1024);
+            if ($chunk === false || $chunk === '') {
+                $meta = stream_get_meta_data($socket);
+                if (!empty($meta['timed_out'])) {
+                    throw new RuntimeException('Flymaster playback gaf geen handshake terug.');
+                }
+                usleep(50000);
+                continue;
+            }
+            $headerBuffer .= $chunk;
+        }
+        $parts = explode("\r\n\r\n", $headerBuffer, 2);
+        $responseHeaders = $parts[0] ?? '';
+        $buffer = $parts[1] ?? '';
+        if (!preg_match('/^HTTP\/\S+\s+101\b/i', $responseHeaders)) {
+            throw new RuntimeException('Flymaster playback gaf geen WebSocket toegang.');
+        }
+
+        fwrite($socket, scoring_flymaster_websocket_frame(json_encode([
+            'group_id' => $groupId,
+            'd' => $relativeTime,
+        ], JSON_UNESCAPED_SLASHES)));
+
+        stream_set_blocking($socket, false);
+        $events = [];
+        $deadline = microtime(true) + $timeoutSeconds;
+        while (microtime(true) < $deadline && count($events) < $maxEvents) {
+            $read = [$socket];
+            $write = null;
+            $except = null;
+            $ready = @stream_select($read, $write, $except, 0, 200000);
+            if ($ready === false) {
+                break;
+            }
+            if ($ready > 0) {
+                $chunk = fread($socket, 8192);
+                if ($chunk === false || $chunk === '') {
+                    continue;
+                }
+                $buffer .= $chunk;
+                foreach (scoring_flymaster_extract_websocket_messages($buffer) as $message) {
+                    $events[] = $message;
+                    if (count($events) >= $maxEvents) {
+                        break 2;
+                    }
+                }
+            }
+        }
+        return $events;
+    } finally {
+        fclose($socket);
+    }
+}
+
+function scoring_flymaster_fetch_pilot_list(int $groupId, int $relativeTime): array {
+    $events = scoring_flymaster_websocket_events($groupId, $relativeTime, 8, 8);
+    foreach ($events as $event) {
+        if (($event['type'] ?? '') === 'pilot_list' && isset($event['pilots']) && is_array($event['pilots'])) {
+            return $event['pilots'];
+        }
+    }
+    return [];
+}
+
+function scoring_flymaster_trace_url(int $groupId, int $serial, int $relativeTime): string {
+    return 'https://lb.flymaster.net/trace.php?p=' . rawurlencode((string)$serial)
+        . '&d=' . rawurlencode((string)$relativeTime)
+        . '&grp=' . rawurlencode((string)$groupId);
+}
+
+function scoring_flymaster_playback_url(int $groupId, int $serial, int $relativeTime): string {
+    return 'https://lt.flymaster.net/bs.php?grp=' . rawurlencode((string)$groupId)
+        . '&p=' . rawurlencode((string)$serial)
+        . '&tm=' . rawurlencode((string)$relativeTime);
+}
+
+function scoring_flymaster_fetch_trace(int $groupId, int $serial, int $relativeTime): array {
+    $body = scoring_http_get(scoring_flymaster_trace_url($groupId, $serial, $relativeTime), 15, 'application/json,text/plain,*/*');
+    $decoded = json_decode($body, true);
+    if (!is_array($decoded) || !isset($decoded['trace']) || !is_array($decoded['trace'])) {
+        return [];
+    }
+    $trace = [];
+    foreach ($decoded['trace'] as $point) {
+        if (!is_array($point) || count($point) < 2 || !is_numeric($point[0]) || !is_numeric($point[1])) {
+            continue;
+        }
+        $lat = (float)$point[0];
+        $lon = (float)$point[1];
+        if ($lat < -90.0 || $lat > 90.0 || $lon < -180.0 || $lon > 180.0) {
+            continue;
+        }
+        $trace[] = [$lat, $lon];
+    }
+    return $trace;
+}
+
+function scoring_flymaster_trace_intersects_bbox(array $trace, array $bbox): bool {
+    foreach ($trace as $point) {
+        $lat = (float)$point[0];
+        $lon = (float)$point[1];
+        if ($lat >= (float)$bbox['min_lat']
+            && $lat <= (float)$bbox['max_lat']
+            && $lon >= (float)$bbox['min_lon']
+            && $lon <= (float)$bbox['max_lon']) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function scoring_flymaster_encode_igc_coord(float $value, bool $isLatitude): string {
+    $hemisphere = $isLatitude ? ($value < 0 ? 'S' : 'N') : ($value < 0 ? 'W' : 'E');
+    $abs = abs($value);
+    $degrees = (int)floor($abs);
+    $minutes = ($abs - $degrees) * 60.0;
+    $thousandths = (int)round($minutes * 1000.0);
+    if ($thousandths >= 60000) {
+        $degrees++;
+        $thousandths -= 60000;
+    }
+    return sprintf($isLatitude ? '%02d%05d%s' : '%03d%05d%s', $degrees, $thousandths, $hemisphere);
+}
+
+function scoring_flymaster_reconstructed_igc_content(array $trace, int $startUnix, int $endUnix, string $pilotName, int $serial): string {
+    $count = count($trace);
+    if ($count < 2) {
+        throw new RuntimeException('Flymaster track bevat te weinig punten.');
+    }
+    if ($endUnix <= $startUnix) {
+        $endUnix = $startUnix + $count - 1;
+    }
+    $duration = max($count - 1, $endUnix - $startUnix);
+    $date = (new DateTimeImmutable('@' . $startUnix))->setTimezone(scoring_utc_timezone());
+    $lines = [
+        'AXXXRANGLIJST',
+        'HFDTE' . $date->format('dmy'),
+        'HFPLTPILOTINCHARGE:' . trim($pilotName),
+        'HFGTYGLIDERTYPE:Flymaster replay reconstruction',
+        'HFRFWFIRMWAREVERSION:Ranglijst Flymaster scout',
+        'HFCIDCOMPETITIONID:Flymaster #' . $serial,
+    ];
+    foreach ($trace as $i => $point) {
+        $ts = $startUnix + (int)round(($i * $duration) / max(1, $count - 1));
+        $lat = scoring_flymaster_encode_igc_coord((float)$point[0], true);
+        $lon = scoring_flymaster_encode_igc_coord((float)$point[1], false);
+        $lines[] = 'B' . gmdate('His', $ts) . $lat . $lon . 'A0000000000';
+    }
+    $lines[] = 'LPLTReconstructed from public Flymaster playback; not an original signed IGC, timing may be approximate.';
+    return implode("\n", $lines) . "\n";
+}
+
+function scoring_flymaster_write_reconstructed_igc(array $trace, int $startUnix, int $endUnix, string $pilotName, int $serial): string {
+    $tmp = tempnam(sys_get_temp_dir(), 'fm_');
+    if ($tmp === false) {
+        throw new RuntimeException('Tijdelijk Flymaster-bestand kon niet worden gemaakt.');
+    }
+    $content = scoring_flymaster_reconstructed_igc_content($trace, $startUnix, $endUnix, $pilotName, $serial);
+    if (@file_put_contents($tmp, $content) === false) {
+        @unlink($tmp);
+        throw new RuntimeException('Tijdelijk Flymaster-bestand kon niet worden opgeslagen.');
+    }
+    return $tmp;
+}
+
+function scoring_flymaster_pilot_time_value(array $pilot, string $key): int {
+    return isset($pilot[$key]) && is_numeric($pilot[$key]) ? (int)$pilot[$key] : 0;
+}
+
+function scoring_flymaster_merge_pilot(array $existing, array $incoming): array {
+    foreach ($incoming as $key => $value) {
+        if (!array_key_exists($key, $existing) || $existing[$key] === null || $existing[$key] === '') {
+            $existing[$key] = $value;
+        }
+    }
+    foreach (['td', 'd'] as $key) {
+        $old = scoring_flymaster_pilot_time_value($existing, $key);
+        $new = scoring_flymaster_pilot_time_value($incoming, $key);
+        if ($new > 0) {
+            $existing[$key] = $key === 'td' && $old > 0 ? min($old, $new) : max($old, $new);
+        }
+    }
+    return $existing;
+}
+
+function scoring_flymaster_trace_key(array $trace): string {
+    $count = count($trace);
+    if ($count === 0) {
+        return 'empty';
+    }
+    return sha1(json_encode([
+        $count,
+        $trace[0],
+        $trace[$count - 1],
+    ], JSON_UNESCAPED_SLASHES));
+}
+
+function scoring_flymaster_import_trace_candidate(
+    PDO $pdo,
+    array $task,
+    int $groupId,
+    int $serial,
+    string $pilotName,
+    ?string $pilotEmail,
+    array $trace,
+    int $startRel,
+    int $endRel,
+    int $traceAtRel,
+    string $externalId,
+    array &$summary
+): void {
+    $summary['candidates']++;
+    $existing = scoring_find_tracklog_by_source($pdo, 'flymaster_replay', $externalId);
+    if ($existing) {
+        $tracklog = $existing;
+    } else {
+        $tmpPath = null;
+        try {
+            $tmpPath = scoring_flymaster_write_reconstructed_igc(
+                $trace,
+                scoring_flymaster_relative_to_unix($startRel),
+                scoring_flymaster_relative_to_unix(max($endRel, $startRel + count($trace) - 1)),
+                $pilotName,
+                $serial
+            );
+            $tracklogId = scoring_store_tracklog_file(
+                $pdo,
+                $tmpPath,
+                'flymaster-replay-' . $serial . '-' . $startRel . '-' . $endRel . '.igc',
+                $pilotName,
+                $pilotEmail,
+                [
+                    'source' => 'flymaster_replay',
+                    'external_id' => $externalId,
+                    'url' => scoring_flymaster_playback_url($groupId, $serial, $traceAtRel),
+                ]
+            );
+        } finally {
+            if ($tmpPath && is_file($tmpPath)) {
+                @unlink($tmpPath);
+            }
+        }
+
+        $stmt = $pdo->prepare('SELECT id, pilot_name, pilot_email FROM rankings_scoring_tracklogs WHERE id = ? LIMIT 1');
+        $stmt->execute([$tracklogId]);
+        $tracklog = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$tracklog) {
+            throw new RuntimeException('Flymaster kandidaat kon niet worden teruggevonden.');
+        }
+    }
+
+    $flightId = scoring_link_tracklog_to_task(
+        $pdo,
+        $task,
+        (int)$tracklog['id'],
+        (string)$tracklog['pilot_name'],
+        (string)$tracklog['pilot_email']
+    );
+    if ($existing) {
+        if ($flightId > 0) {
+            $summary['already_linked']++;
+        }
+    } else {
+        $summary['imported']++;
+    }
+}
+
+function scoring_import_flymaster_for_task(PDO $pdo, array $task, array $turnpoints): array {
     scoring_ensure_track_collection_tables($pdo);
     if (empty($turnpoints)) {
-        throw new RuntimeException('Voeg taakpunten toe voordat je LiveTrack24 tracks zoekt.');
+        throw new RuntimeException('Voeg taakpunten toe voordat je Flymaster tracks zoekt.');
     }
-    $bbox = scoring_task_bbox($turnpoints);
-    $fromDate = (new DateTimeImmutable((string)$task['window_open_at'], scoring_utc_timezone()))
-        ->modify('-1 day')
-        ->format('Y-m-d');
-    $toDate = (new DateTimeImmutable((string)$task['window_close_at'], scoring_utc_timezone()))
-        ->modify('+1 day')
-        ->format('Y-m-d');
 
-    $stmt = $pdo->query(
-        "SELECT *
-         FROM rankings_track_collection_profiles
-         WHERE livetrack24_enabled = 1
-           AND email_verified_at IS NOT NULL
-           AND livetrack24_username IS NOT NULL
-           AND livetrack24_username <> ''
-         ORDER BY display_name ASC"
-    );
-    $profiles = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    $groupId = scoring_flymaster_group_id();
+    $bbox = scoring_task_bbox($turnpoints);
+    $openTs = (new DateTimeImmutable((string)$task['window_open_at'], scoring_utc_timezone()))->getTimestamp();
+    $closeTs = (new DateTimeImmutable((string)$task['window_close_at'], scoring_utc_timezone()))->getTimestamp();
+    $openRel = scoring_flymaster_unix_to_relative($openTs);
+    $closeRel = scoring_flymaster_unix_to_relative($closeTs);
+    $midRel = (int)round(($openRel + $closeRel) / 2);
+    $sampleTimes = array_values(array_unique([$openRel, $midRel, $closeRel]));
     $summary = [
         'profiles_checked' => 0,
-        'tracks_seen' => 0,
+        'profile_matches' => 0,
+        'snapshots_checked' => 0,
+        'pilots_seen' => 0,
+        'time_matches' => 0,
+        'traces_checked' => 0,
         'candidates' => 0,
         'imported' => 0,
         'already_linked' => 0,
         'errors' => 0,
         'messages' => [],
+        'public_scout_enabled' => scoring_flymaster_public_scout_enabled() ? 1 : 0,
     ];
-    $seenTrackIds = [];
 
+    $profileStmt = $pdo->query(
+        "SELECT id, display_name, email, flymaster_serial
+         FROM rankings_track_collection_profiles
+         WHERE flymaster_enabled = 1
+           AND email_verified_at IS NOT NULL
+           AND flymaster_serial IS NOT NULL
+           AND flymaster_serial <> ''
+         ORDER BY display_name ASC"
+    );
+    $profiles = $profileStmt ? $profileStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    $profileSampleTimes = array_values(array_unique([$closeRel, $midRel, $openRel]));
     foreach ($profiles as $profile) {
         $summary['profiles_checked']++;
         $profileId = (int)$profile['id'];
-        $username = (string)$profile['livetrack24_username'];
+        $serial = (int)scoring_flymaster_normalize_serial((string)$profile['flymaster_serial']);
+        $pilotName = trim((string)$profile['display_name']);
+        if ($pilotName === '') {
+            $pilotName = 'Flymaster #' . $serial;
+        }
         try {
-            $list = scoring_livetrack24_list_public_tracks($username, $fromDate, $toDate);
-            if (!empty($list['user_id'])) {
-                $pdo->prepare('UPDATE rankings_track_collection_profiles SET livetrack24_user_id = ? WHERE id = ?')
-                    ->execute([(int)$list['user_id'], $profileId]);
-            }
-            foreach ($list['tracks'] as $trackId) {
-                $trackId = (string)$trackId;
-                if (isset($seenTrackIds[$trackId])) {
+            $seenTraces = [];
+            foreach ($profileSampleTimes as $traceRel) {
+                $trace = scoring_flymaster_fetch_trace($groupId, $serial, $traceRel);
+                $summary['traces_checked']++;
+                if (count($trace) < 2) {
                     continue;
                 }
-                $seenTrackIds[$trackId] = true;
-                $summary['tracks_seen']++;
-
-                $trackInfo = scoring_livetrack24_fetch_track_info($trackId);
-                if (!$trackInfo || !scoring_livetrack24_track_matches_task($trackInfo, $task, $bbox)) {
+                $traceKey = scoring_flymaster_trace_key($trace);
+                if (isset($seenTraces[$traceKey])) {
                     continue;
                 }
-                $summary['candidates']++;
-
-                $tracklog = scoring_find_tracklog_by_source($pdo, 'livetrack24', $trackId);
-                $wasImported = false;
-                if (!$tracklog) {
-                    $tmpPath = null;
-                    try {
-                        $tmpPath = scoring_livetrack24_download_igc_to_temp($trackId, $username);
-                        $tracklogId = scoring_store_tracklog_file(
-                            $pdo,
-                            $tmpPath,
-                            'livetrack24-' . $username . '-' . $trackId . '.igc',
-                            (string)$profile['display_name'],
-                            (string)$profile['email'],
-                            [
-                                'source' => 'livetrack24',
-                                'external_id' => $trackId,
-                                'url' => scoring_livetrack24_track_url($trackId),
-                            ]
-                        );
-                        $tracklog = [
-                            'id' => $tracklogId,
-                            'pilot_name' => (string)$profile['display_name'],
-                            'pilot_email' => (string)$profile['email'],
-                        ];
-                        $wasImported = true;
-                        $summary['imported']++;
-                    } finally {
-                        if ($tmpPath && is_file($tmpPath)) {
-                            @unlink($tmpPath);
-                        }
-                    }
+                $seenTraces[$traceKey] = true;
+                if (!scoring_flymaster_trace_intersects_bbox($trace, $bbox)) {
+                    continue;
                 }
-
-                $flightId = scoring_link_tracklog_to_task(
+                $summary['profile_matches']++;
+                $externalId = 'grp' . $groupId . '-sn' . $serial . '-' . $openRel . '-' . $closeRel;
+                scoring_flymaster_import_trace_candidate(
                     $pdo,
                     $task,
-                    (int)$tracklog['id'],
-                    (string)$tracklog['pilot_name'],
-                    (string)$tracklog['pilot_email']
+                    $groupId,
+                    $serial,
+                    $pilotName,
+                    (string)$profile['email'],
+                    $trace,
+                    $openRel,
+                    $closeRel,
+                    $traceRel,
+                    $externalId,
+                    $summary
                 );
-                if ($flightId > 0 && !$wasImported) {
-                    $summary['already_linked']++;
-                }
+                break;
             }
-            $pdo->prepare('UPDATE rankings_track_collection_profiles SET last_livetrack24_check_at = UTC_TIMESTAMP() WHERE id = ?')
+            $pdo->prepare('UPDATE rankings_track_collection_profiles SET last_flymaster_check_at = UTC_TIMESTAMP() WHERE id = ?')
                 ->execute([$profileId]);
         } catch (Throwable $e) {
             $summary['errors']++;
-            $summary['messages'][] = (string)$profile['display_name'] . ': ' . $e->getMessage();
+            $summary['messages'][] = $pilotName . ' (#' . $serial . '): ' . $e->getMessage();
+        }
+    }
+
+    if (!scoring_flymaster_public_scout_enabled()) {
+        return $summary;
+    }
+
+    $pilots = [];
+    foreach ($sampleTimes as $sampleRel) {
+        try {
+            $summary['snapshots_checked']++;
+            foreach (scoring_flymaster_fetch_pilot_list($groupId, $sampleRel) as $pilot) {
+                if (!is_array($pilot) || empty($pilot['sn']) || !is_numeric($pilot['sn'])) {
+                    continue;
+                }
+                $serial = (int)$pilot['sn'];
+                $pilots[$serial] = isset($pilots[$serial])
+                    ? scoring_flymaster_merge_pilot($pilots[$serial], $pilot)
+                    : $pilot;
+            }
+        } catch (Throwable $e) {
+            $summary['errors']++;
+            $snapshotTime = gmdate('Y-m-d H:i', scoring_flymaster_relative_to_unix($sampleRel)) . ' UTC';
+            $summary['messages'][] = 'Flymaster snapshot ' . $snapshotTime . ': ' . $e->getMessage();
+        }
+    }
+    $summary['pilots_seen'] = count($pilots);
+
+    $timeMargin = 3600;
+    foreach ($pilots as $serial => $pilot) {
+        $pilotName = trim((string)($pilot['nm'] ?? ('Flymaster #' . $serial)));
+        if ($pilotName === '') {
+            $pilotName = 'Flymaster #' . $serial;
+        }
+        $startRel = scoring_flymaster_pilot_time_value($pilot, 'td');
+        $lastRel = scoring_flymaster_pilot_time_value($pilot, 'd');
+        if ($startRel <= 0) {
+            $startRel = $openRel;
+        }
+        if ($lastRel <= 0) {
+            $lastRel = $closeRel;
+        }
+        if ($lastRel < $openRel - $timeMargin || $startRel > $closeRel + $timeMargin) {
+            continue;
+        }
+        $summary['time_matches']++;
+        $traceAtRel = max($startRel + 1, min($lastRel, $closeRel));
+        if ($traceAtRel < $openRel) {
+            $traceAtRel = $lastRel;
+        }
+
+        try {
+            $trace = scoring_flymaster_fetch_trace($groupId, (int)$serial, $traceAtRel);
+            $summary['traces_checked']++;
+            if (count($trace) < 2 || !scoring_flymaster_trace_intersects_bbox($trace, $bbox)) {
+                continue;
+            }
+
+            $externalId = 'grp' . $groupId . '-sn' . $serial . '-' . $openRel . '-' . $closeRel;
+            scoring_flymaster_import_trace_candidate(
+                $pdo,
+                $task,
+                $groupId,
+                (int)$serial,
+                $pilotName,
+                null,
+                $trace,
+                $startRel,
+                max($traceAtRel, $startRel + count($trace) - 1),
+                $traceAtRel,
+                $externalId,
+                $summary
+            );
+        } catch (Throwable $e) {
+            $summary['errors']++;
+            $summary['messages'][] = $pilotName . ' (#' . $serial . '): ' . $e->getMessage();
         }
     }
 

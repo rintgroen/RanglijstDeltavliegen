@@ -139,12 +139,19 @@ CREATE TABLE IF NOT EXISTS rankings_track_collection_profiles (
   livetrack24_enabled_at DATETIME DEFAULT NULL,
   livetrack24_disabled_at DATETIME DEFAULT NULL,
   last_livetrack24_check_at DATETIME DEFAULT NULL,
+  flymaster_serial VARCHAR(20) DEFAULT NULL,
+  flymaster_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  flymaster_enabled_at DATETIME DEFAULT NULL,
+  flymaster_disabled_at DATETIME DEFAULT NULL,
+  last_flymaster_check_at DATETIME DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_rankings_track_collection_profiles_email (email),
   KEY idx_rankings_track_collection_profiles_lt24 (livetrack24_username),
-  KEY idx_rankings_track_collection_profiles_enabled (livetrack24_enabled, livetrack24_username)
+  KEY idx_rankings_track_collection_profiles_enabled (livetrack24_enabled, livetrack24_username),
+  KEY idx_rankings_track_collection_profiles_flymaster (flymaster_serial),
+  KEY idx_rankings_track_collection_profiles_flymaster_enabled (flymaster_enabled, flymaster_serial)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS rankings_track_collection_login_tokens (

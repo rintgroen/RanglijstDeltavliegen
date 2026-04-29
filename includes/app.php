@@ -33,6 +33,10 @@ function app_asset(string $path): string {
     return (app_is_admin() || app_is_scoring()) ? '../public/assets/' . $path : 'assets/' . $path;
 }
 
+function app_mascot_logo_asset(): string {
+    return app_asset('LogoRanglijstDeltavliegen.png');
+}
+
 function app_public_url(string $path): string {
     $path = ltrim($path, '/');
     return (app_is_admin() || app_is_scoring()) ? '../public/' . $path : $path;
@@ -257,12 +261,14 @@ function app_page_start(string $title, array $options = []): void {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><?= h($title) ?></title>
   <meta name="description" content="<?= h($description) ?>">
+  <link rel="icon" type="image/png" href="<?= h(app_mascot_logo_asset()) ?>">
   <link rel="stylesheet" href="<?= h(app_asset('style.css')) ?>">
   <?= $extraHead ?>
 </head>
 <body class="<?= h($bodyClass) ?>">
 <header class="site-header">
   <a class="site-brand" href="<?= h($brandHref) ?>">
+    <img class="site-logo" src="<?= h(app_mascot_logo_asset()) ?>" alt="" width="68" height="68" decoding="async">
     <span class="site-title"><?= h(app_site_name()) ?></span>
     <?php if (app_is_admin()): ?><span class="site-badge">Admin</span><?php endif; ?>
   </a>

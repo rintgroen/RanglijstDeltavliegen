@@ -98,7 +98,7 @@ $taskTabByAction = [
     'delete_turnpoint' => 'settings',
     'update_turnpoints' => 'settings',
     'match_tracks' => 'review',
-    'collect_livetrack24' => 'review',
+    'collect_flymaster' => 'review',
     'add_manual_flight' => 'review',
     'save_review' => 'review',
     'score_task' => 'scoring',
@@ -228,22 +228,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $task = scoring_load_task($pdo, $taskId);
                 $matched = scoring_match_task_tracklogs($pdo, $task, $turnpoints);
                 $notice = $matched . ' tracklog(s) gekoppeld aan deze taak.';
-            } elseif ($action === 'collect_livetrack24') {
+            } elseif ($action === 'collect_flymaster') {
                 $turnpoints = scoring_load_task_turnpoints($pdo, $taskId);
                 $task = scoring_load_task($pdo, $taskId);
-                $summary = scoring_import_livetrack24_for_task($pdo, $task, $turnpoints);
+                $summary = scoring_import_flymaster_for_task($pdo, $task, $turnpoints);
                 $matchedUploads = scoring_match_task_tracklogs($pdo, $task, $turnpoints);
-                $notice = 'LiveTrack24 gecontroleerd: '
+                $notice = 'Flymaster gecontroleerd: '
                     . (int)$summary['profiles_checked'] . ' profiel(en), '
-                    . (int)$summary['tracks_seen'] . ' track(s), '
+                    . (int)$summary['profile_matches'] . ' profielmatch(es), '
+                    . (int)$summary['snapshots_checked'] . ' snapshot(s), '
+                    . (int)$summary['pilots_seen'] . ' piloot/piloten, '
+                    . (int)$summary['traces_checked'] . ' replay-track(s), '
                     . (int)$summary['candidates'] . ' kandidaat/kandidaten, '
-                    . (int)$summary['imported'] . ' nieuw geimporteerd.';
+                    . (int)$summary['imported'] . ' nieuw gereconstrueerd.';
                 $notice .= ' Uploads gecontroleerd: ' . (int)$matchedUploads . ' kandidaat/kandidaten gekoppeld.';
                 if ((int)$summary['already_linked'] > 0) {
                     $notice .= ' ' . (int)$summary['already_linked'] . ' bestaande kandidaat/kandidaten gekoppeld.';
                 }
                 if ((int)$summary['errors'] > 0) {
                     $notice .= ' ' . (int)$summary['errors'] . ' fout(en).';
+                    $messages = array_values(array_unique(array_filter(array_map('strval', $summary['messages'] ?? []))));
+                    if (!empty($messages)) {
+                        $notice .= ' Details: ' . implode(' | ', array_slice($messages, 0, 3));
+                        $messageText = implode(' ', $messages);
+                        if (preg_match('/Flymaster snapshot .*?(Connection timed out|Connection refused|php_network_getaddresses|Could not resolve host)/i', $messageText)) {
+                            $notice .= ' Controleer of de server uitgaand verkeer naar lb.flymaster.net:8081 toestaat.';
+                        } elseif (preg_match('/Connection timed out|Connection refused|php_network_getaddresses|Could not resolve host/i', $messageText)) {
+                            $notice .= ' Controleer of de server uitgaand HTTPS-verkeer naar lb.flymaster.net toestaat.';
+                        }
+                    }
                 }
             } elseif ($action === 'add_manual_flight') {
                 $manualType = (string)($_POST['manual_entry_type'] ?? 'tracklog');
@@ -873,7 +886,7 @@ app_page_start($task['name'] . ' - Scoring', [
     <div class="section-header">
       <div>
         <h2>Track review</h2>
-        <p class="muted">Zoek uploads en LiveTrack24-kandidaten, kies per piloot welke rij voor de score telt, en laat alternatieven staan als fallback.</p>
+        <p class="muted">Zoek uploads en Flymaster-reconstructies, kies per piloot welke rij voor de score telt, en laat alternatieven staan als fallback.</p>
       </div>
       <div class="inline">
         <form method="post">
@@ -883,8 +896,8 @@ app_page_start($task['name'] . ' - Scoring', [
         </form>
         <form method="post">
           <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-          <input type="hidden" name="action" value="collect_livetrack24">
-          <button class="secondary" type="submit">LiveTrack24 zoeken</button>
+          <input type="hidden" name="action" value="collect_flymaster">
+          <button class="secondary" type="submit">Flymaster zoeken</button>
         </form>
       </div>
     </div>
@@ -986,6 +999,8 @@ app_page_start($task['name'] . ' - Scoring', [
                     $sourceLabel = 'Upload';
                     if (($flight['source'] ?? '') === 'livetrack24') {
                         $sourceLabel = 'LiveTrack24';
+                    } elseif (($flight['source'] ?? '') === 'flymaster_replay') {
+                        $sourceLabel = 'Flymaster replay';
                     }
                     $filenameLabel = trim((string)($flight['original_filename'] ?? ''));
                     $timeLabel = scoring_utc_sql_to_display($flight['first_fix_at']);
@@ -1000,6 +1015,12 @@ app_page_start($task['name'] . ' - Scoring', [
                     $trackLabelParts[] = $timeLabel;
                     if (($flight['source'] ?? '') === 'livetrack24' && !empty($flight['source_external_id'])) {
                         $trackLabelParts[] = 'LT24 #' . $flight['source_external_id'];
+                    } elseif (($flight['source'] ?? '') === 'flymaster_replay' && !empty($flight['source_external_id'])) {
+                        if (preg_match('/sn(\d+)/', (string)$flight['source_external_id'], $m)) {
+                            $trackLabelParts[] = 'Flymaster #' . $m[1];
+                        } else {
+                            $trackLabelParts[] = 'Flymaster reconstructie';
+                        }
                     } elseif (!empty($flight['uploaded_at'])) {
                         $trackLabelParts[] = 'upload ' . scoring_utc_sql_to_display($flight['uploaded_at']);
                     }
