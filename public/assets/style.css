@@ -842,6 +842,12 @@ button.danger {
   border-color: #b42318;
 }
 
+.task-map-swatch.waypoint {
+  background: #fff;
+  border-color: #64748b;
+  border-style: solid;
+}
+
 .task-route-arrow {
   background: transparent;
   border: 0;

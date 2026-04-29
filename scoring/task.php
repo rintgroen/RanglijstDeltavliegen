@@ -85,8 +85,8 @@ if ($wantsReviewMap) {
 $competition = scoring_load_competition($pdo, (int)$task['competition_id']);
 $taskTabs = [
     'settings' => '1. Taak instellen en delen',
-    'review' => '2. tracks controleren',
-    'scoring' => '3. scoren en publiceren',
+    'review' => '2. Tracks controleren',
+    'scoring' => '3. Scoren en publiceren',
 ];
 $requestedTab = is_string($_GET['tab'] ?? null) ? $_GET['tab'] : '';
 $activeTab = isset($taskTabs[$requestedTab]) ? $requestedTab : 'settings';
@@ -611,6 +611,23 @@ $taskShareUrl = scoring_task_share_url($taskId);
 $taskSharePublicHref = '../public/task_board.php?id=' . (int)$taskId;
 $taskShareXctskHref = $taskSharePublicHref . '&download=xctsk';
 if ($taskMap) {
+    $competitionWaypointMapPoints = [];
+    foreach ($waypoints as $wp) {
+        if (!is_numeric($wp['latitude'] ?? null) || !is_numeric($wp['longitude'] ?? null)) {
+            continue;
+        }
+        $competitionWaypointMapPoints[] = [
+            'id' => (int)($wp['id'] ?? 0),
+            'name' => (string)($wp['name'] ?? ''),
+            'code' => (string)($wp['code'] ?? ''),
+            'lat' => round((float)$wp['latitude'], 7),
+            'lon' => round((float)$wp['longitude'], 7),
+        ];
+    }
+    if (!empty($competitionWaypointMapPoints)) {
+        $taskMap['competition_waypoints'] = $competitionWaypointMapPoints;
+    }
+
     $taskMapJson = json_encode(
         $taskMap,
         JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
@@ -737,6 +754,9 @@ app_page_start($task['name'] . ' - Scoring', [
               <span><i class="task-map-swatch normal"></i>Normaal</span>
               <span><i class="task-map-swatch sss"></i>SSS</span>
               <span><i class="task-map-swatch ess"></i>ESS</span>
+              <?php if (!empty($taskMap['competition_waypoints'])): ?>
+                <span><i class="task-map-swatch waypoint"></i>Waypoint</span>
+              <?php endif; ?>
             </div>
             <script type="application/json" class="task-map-data"><?= $taskMapJson ?></script>
           <?php endif; ?>

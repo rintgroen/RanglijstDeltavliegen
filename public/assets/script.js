@@ -276,7 +276,36 @@
       ess: 'ESS',
       sss_ess: 'SSS / ESS'
     };
-    var layers = [];
+    var taskLayers = [];
+    var competitionWaypoints = data && Array.isArray(data.competition_waypoints) ? data.competition_waypoints.map(function (wp) {
+      var lat = Number(wp.lat);
+      var lon = Number(wp.lon);
+      if (!isFinite(lat) || !isFinite(lon)) {
+        return null;
+      }
+      return {
+        center: [lat, lon],
+        name: wp.name || wp.code || 'Waypoint',
+        code: wp.code || ''
+      };
+    }).filter(Boolean) : [];
+
+    competitionWaypoints.forEach(function (wp) {
+      var marker = window.L.circleMarker(wp.center, {
+        className: 'competition-waypoint-marker',
+        color: '#64748b',
+        fillColor: '#ffffff',
+        fillOpacity: 0.82,
+        opacity: 0.72,
+        radius: 3,
+        weight: 1.5
+      }).addTo(map);
+      var popup = '<strong>' + escapeHtml(wp.name) + '</strong>';
+      if (wp.code && wp.code !== wp.name) {
+        popup += '<br>' + escapeHtml(wp.code);
+      }
+      marker.bindPopup(popup);
+    });
 
     turnpoints.forEach(function (tp) {
       var role = styles[tp.role] ? tp.role : 'normal';
@@ -291,7 +320,7 @@
       }).addTo(map);
       var label = escapeHtml(tp.sequence + '. ' + tp.name);
       circle.bindPopup('<strong>' + label + '</strong><br>' + escapeHtml(roleLabels[role]) + '<br>Radius: ' + Math.round(tp.radius) + ' m');
-      layers.push(circle);
+      taskLayers.push(circle);
       var marker = window.L.circleMarker(tp.center, {
         color: style.color,
         fillColor: '#ffffff',
@@ -299,7 +328,7 @@
         radius: role === 'normal' ? 4 : 6,
         weight: role === 'normal' ? 2 : 3
       }).addTo(map);
-      layers.push(marker);
+      taskLayers.push(marker);
     });
 
     var route = Array.isArray(data.route) ? data.route.map(function (point) {
@@ -313,7 +342,7 @@
         opacity: 0.9,
         weight: 3
       }).addTo(map);
-      layers.push(line);
+      taskLayers.push(line);
       for (var i = 1; i < route.length; i++) {
         if (route[i - 1][0] === route[i][0] && route[i - 1][1] === route[i][1]) {
           continue;
@@ -327,12 +356,12 @@
           }),
           interactive: false
         }).addTo(map);
-        layers.push(arrow);
+        taskLayers.push(arrow);
       }
     }
 
-    if (layers.length > 0) {
-      var group = window.L.featureGroup(layers);
+    if (taskLayers.length > 0) {
+      var group = window.L.featureGroup(taskLayers);
       var bounds = group.getBounds();
       if (bounds && typeof bounds.isValid === 'function' && bounds.isValid()) {
         map.fitBounds(bounds.pad(0.16), { maxZoom: 14, padding: [18, 18] });
