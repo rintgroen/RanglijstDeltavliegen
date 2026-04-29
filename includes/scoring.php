@@ -72,6 +72,46 @@ function scoring_normalize_email(string $email): string {
     return strtolower(trim($email));
 }
 
+function scoring_load_scorer_login_token(PDO $pdo, string $token): ?array {
+    $token = trim($token);
+    if ($token === '') {
+        return null;
+    }
+    $stmt = $pdo->prepare(
+        'SELECT t.id AS token_id, t.scorer_id, s.email, s.name
+         FROM rankings_scorer_login_tokens t
+         JOIN rankings_scorers s ON s.id = t.scorer_id
+         WHERE t.token_hash = ?
+           AND t.used_at IS NULL
+           AND t.expires_at >= UTC_TIMESTAMP()
+           AND s.active = 1
+         LIMIT 1'
+    );
+    $stmt->execute([hash('sha256', $token)]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ?: null;
+}
+
+function scoring_consume_scorer_login_token(PDO $pdo, string $token): ?array {
+    $row = scoring_load_scorer_login_token($pdo, $token);
+    if (!$row) {
+        return null;
+    }
+    $stmt = $pdo->prepare(
+        'UPDATE rankings_scorer_login_tokens
+         SET used_at = UTC_TIMESTAMP()
+         WHERE id = ?
+           AND used_at IS NULL
+           AND expires_at >= UTC_TIMESTAMP()'
+    );
+    $stmt->execute([(int)$row['token_id']]);
+    if ($stmt->rowCount() < 1) {
+        return null;
+    }
+    unset($row['token_id']);
+    return $row;
+}
+
 function scoring_current_scorer(PDO $pdo): ?array {
     if (session_status() !== PHP_SESSION_ACTIVE) {
         @session_start();
@@ -768,9 +808,6 @@ function scoring_find_or_create_track_collection_profile(PDO $pdo, string $displ
     scoring_ensure_track_collection_tables($pdo);
     $displayName = trim($displayName);
     $email = scoring_normalize_email($email);
-    if ($displayName === '') {
-        throw new RuntimeException('Vul je naam in.');
-    }
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         throw new RuntimeException('Vul een geldig e-mailadres in.');
     }
@@ -822,7 +859,7 @@ function scoring_create_track_collection_login_token(PDO $pdo, int $profileId): 
     return $token;
 }
 
-function scoring_consume_track_collection_login_token(PDO $pdo, string $token): ?array {
+function scoring_load_track_collection_login_token_profile(PDO $pdo, string $token): ?array {
     scoring_ensure_track_collection_tables($pdo);
     $token = trim($token);
     if ($token === '') {
@@ -842,8 +879,25 @@ function scoring_consume_track_collection_login_token(PDO $pdo, string $token): 
     if (!$profile) {
         return null;
     }
-    $pdo->prepare('UPDATE rankings_track_collection_login_tokens SET used_at = UTC_TIMESTAMP() WHERE id = ?')
-        ->execute([(int)$profile['token_id']]);
+    return $profile;
+}
+
+function scoring_consume_track_collection_login_token(PDO $pdo, string $token): ?array {
+    $profile = scoring_load_track_collection_login_token_profile($pdo, $token);
+    if (!$profile) {
+        return null;
+    }
+    $stmt = $pdo->prepare(
+        'UPDATE rankings_track_collection_login_tokens
+         SET used_at = UTC_TIMESTAMP()
+         WHERE id = ?
+           AND used_at IS NULL
+           AND expires_at >= UTC_TIMESTAMP()'
+    );
+    $stmt->execute([(int)$profile['token_id']]);
+    if ($stmt->rowCount() < 1) {
+        return null;
+    }
     $pdo->prepare(
         'UPDATE rankings_track_collection_profiles
          SET email_verified_at = COALESCE(email_verified_at, UTC_TIMESTAMP())
@@ -857,12 +911,12 @@ function scoring_consume_track_collection_login_token(PDO $pdo, string $token): 
 function scoring_send_track_collection_magic_link(string $email, string $link): bool {
     $subject = app_site_name() . ' trackprofiel';
     $text = "Hallo,\n\nGebruik deze link om je trackprofiel te openen:\n\n" . $link
-        . "\n\nHier kun je je naam, e-mailadres en Flymaster toestemming voor competitie scoring beheren. Deze link verloopt automatisch.\n";
+        . "\n\nHier kun je je naam voor uitslagen, Flymaster serienummer en toestemming voor competitie scoring beheren. Deze link verloopt automatisch.\n";
     $html = scoring_html_email_shell('Je trackprofiel', ''
         . '<p style="margin:0 0 14px;">Hallo,</p>'
         . '<p style="margin:0 0 18px;">Met onderstaande knop open je je trackprofiel voor competitie scoring.</p>'
         . '<p style="margin:0 0 18px;"><a href="' . h($link) . '" style="background:#0f6fa8;border-radius:6px;color:#ffffff;display:inline-block;font-weight:bold;padding:11px 16px;text-decoration:none;">Trackprofiel openen</a></p>'
-        . '<p style="margin:0 0 12px;color:#516779;">Hier kun je je naam, e-mailadres en Flymaster toestemming voor competitie scoring beheren. Deze link verloopt automatisch.</p>'
+        . '<p style="margin:0 0 12px;color:#516779;">Hier kun je je naam voor uitslagen, Flymaster serienummer en toestemming voor competitie scoring beheren. Deze link verloopt automatisch.</p>'
         . '<p style="margin:0;color:#516779;font-size:13px;">Werkt de knop niet? Open deze link:<br><a href="' . h($link) . '">' . h($link) . '</a></p>');
     return scoring_send_email($email, $subject, $text, $html, 'track-profile-login');
 }

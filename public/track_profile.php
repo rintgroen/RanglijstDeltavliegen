@@ -8,6 +8,8 @@ $csrf = app_csrf_token();
 $notice = null;
 $error = null;
 $devLink = null;
+$confirmToken = null;
+$confirmProfile = null;
 
 try {
     scoring_ensure_track_collection_tables($pdo);
@@ -19,15 +21,13 @@ if (isset($_GET['opened']) && $error === null) {
     $notice = 'Je trackprofiel is geopend.';
 }
 
-if (isset($_GET['token']) && is_string($_GET['token']) && $error === null) {
+if ($_SERVER['REQUEST_METHOD'] !== 'POST' && isset($_GET['token']) && is_string($_GET['token']) && $error === null) {
     try {
-        $profile = scoring_consume_track_collection_login_token($pdo, (string)$_GET['token']);
-        if (!$profile) {
+        $confirmProfile = scoring_load_track_collection_login_token_profile($pdo, (string)$_GET['token']);
+        if (!$confirmProfile) {
             throw new RuntimeException('Deze link is ongeldig of verlopen.');
         }
-        $_SESSION['track_collection_profile_id'] = (int)$profile['id'];
-        header('Location: track_profile.php?opened=1');
-        exit;
+        $confirmToken = (string)$_GET['token'];
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -45,10 +45,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $error === null) {
             throw new RuntimeException('Ongeldige inzending. Probeer het opnieuw.');
         }
         $action = (string)($_POST['action'] ?? '');
-        if ($action === 'request_link') {
-            $displayName = trim((string)($_POST['display_name'] ?? ''));
+        if ($action === 'consume_token') {
+            $openedProfile = scoring_consume_track_collection_login_token($pdo, (string)($_POST['token'] ?? ''));
+            if (!$openedProfile) {
+                throw new RuntimeException('Deze link is ongeldig of verlopen.');
+            }
+            $_SESSION['track_collection_profile_id'] = (int)$openedProfile['id'];
+            header('Location: track_profile.php?opened=1');
+            exit;
+        } elseif ($action === 'request_link') {
             $email = scoring_normalize_email((string)($_POST['email'] ?? ''));
-            $requestedProfile = scoring_find_or_create_track_collection_profile($pdo, $displayName, $email);
+            $requestedProfile = scoring_find_or_create_track_collection_profile($pdo, '', $email);
             $token = scoring_create_track_collection_login_token($pdo, (int)$requestedProfile['id']);
             $devLink = scoring_absolute_url('public/track_profile.php?token=' . $token);
             $sent = scoring_send_track_collection_magic_link($email, $devLink);
@@ -116,24 +123,39 @@ app_page_start(app_site_name() . ' - Trackprofiel', [
       <div class="notice"><a href="<?= h($devLink) ?>">Debug link openen</a></div>
     <?php endif; ?>
 
-    <?php if (!$profile): ?>
-      <p class="muted">Vraag een tijdelijke link aan om je naam, e-mailadres en Flymaster toestemming voor competitie scoring te beheren.</p>
+    <?php if ($confirmToken !== null && $confirmProfile): ?>
+      <p class="muted">Bevestig dat je je trackprofiel wilt openen<?= !empty($confirmProfile['email']) ? ' voor ' . h((string)$confirmProfile['email']) : '' ?>.</p>
+      <form method="post">
+        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+        <input type="hidden" name="action" value="consume_token">
+        <input type="hidden" name="token" value="<?= h($confirmToken) ?>">
+        <p><button type="submit">Trackprofiel openen</button></p>
+      </form>
+    <?php elseif (!$profile): ?>
+      <p class="muted">
+        Als je een Flymaster tracker hebt, kun je deze in een trackprofiel met het serienummer aan RanglijstDeltavliegen koppelen. Hiermee kunnen we je tracklog voor toekomstige taken automatisch ophalen bij Flymaster. Een tracklog uploaden is dan niet meer nodig, maar kan nog steeds in geval je deze als backup wilt meegeven.
+      </p>
+      <p class="muted">
+        Vul je e-mailadres in. Vervolgens krijg je een tijdelijke link waarmee je je trackprofiel kunt aanmaken/aanpassen zonder wachtwoord. Dit doe je eenmalig, de rest verzorgen wij.
+      </p>
       <form method="post">
         <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
         <input type="hidden" name="action" value="request_link">
-        <label>Naam
-          <input type="text" name="display_name" required maxlength="160" autocomplete="name">
-        </label>
-        <label>E-mail
+        <label>E-mailadres
           <input type="email" name="email" required maxlength="190" autocomplete="email">
         </label>
-        <p><button type="submit">Link sturen</button></p>
+        <p><button type="submit">Link naar mijn trackprofiel sturen</button></p>
       </form>
     <?php else: ?>
+      <p class="muted">Beheer hier de gegevens die gebruikt worden voor competitietaken en automatische Flymaster track-verzameling.</p>
       <div class="profile-status">
         <div>
           <span class="status-label">E-mail</span>
           <strong><?= h($profile['email']) ?></strong>
+        </div>
+        <div>
+          <span class="status-label">Naam in uitslagen</span>
+          <strong><?= h(trim((string)$profile['display_name']) !== '' ? (string)$profile['display_name'] : 'nog invullen') ?></strong>
         </div>
         <div>
           <span class="status-label">Flymaster</span>
@@ -152,7 +174,7 @@ app_page_start(app_site_name() . ' - Trackprofiel', [
       <form method="post">
         <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
         <input type="hidden" name="action" value="save_profile">
-        <label>Naam voor uitslagen
+        <label>Naam in uitslagen
           <input type="text" name="display_name" required maxlength="160" autocomplete="name" value="<?= h($profile['display_name']) ?>">
         </label>
         <label>Flymaster serienummer
