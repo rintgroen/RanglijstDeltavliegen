@@ -28,6 +28,8 @@ $competitionTabByAction = [
     'update_competition' => 'settings',
     'add_buddy_scorer' => 'settings',
     'remove_buddy_scorer' => 'settings',
+    'toggle_task_active' => 'settings',
+    'delete_task' => 'settings',
     'create_task' => 'new_task',
     'add_waypoint' => 'settings',
     'reimport_waypoints' => 'settings',
@@ -35,6 +37,11 @@ $competitionTabByAction = [
 
 $notice = null;
 $error = null;
+try {
+    scoring_ensure_task_active_column($pdo);
+} catch (Throwable $e) {
+    $error = app_debug_enabled() ? 'Taakbeheer initialiseren mislukt: ' . $e->getMessage() : 'Taakbeheer initialiseren mislukt.';
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $postedAction = (string)($_POST['action'] ?? '');
@@ -105,6 +112,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 scoring_remove_competition_buddy($pdo, $competitionId, $buddyId);
                 $notice = 'Buddy scorer verwijderd.';
+            } elseif ($action === 'toggle_task_active') {
+                $taskIdToUpdate = (int)($_POST['task_id'] ?? 0);
+                $taskActive = isset($_POST['active']) && (string)$_POST['active'] === '1' ? 1 : 0;
+                $stmt = $pdo->prepare('SELECT name FROM rankings_scoring_tasks WHERE id = ? AND competition_id = ? LIMIT 1');
+                $stmt->execute([$taskIdToUpdate, $competitionId]);
+                $taskName = $stmt->fetchColumn();
+                if ($taskName === false) {
+                    throw new RuntimeException('Taak niet gevonden.');
+                }
+                $stmt = $pdo->prepare('UPDATE rankings_scoring_tasks SET active = ? WHERE id = ? AND competition_id = ?');
+                $stmt->execute([$taskActive, $taskIdToUpdate, $competitionId]);
+                $notice = 'Taak "' . (string)$taskName . '" is ' . ($taskActive === 1 ? 'actief.' : 'inactief.');
+            } elseif ($action === 'delete_task') {
+                $taskIdToDelete = (int)($_POST['task_id'] ?? 0);
+                $stmt = $pdo->prepare('SELECT name FROM rankings_scoring_tasks WHERE id = ? AND competition_id = ? LIMIT 1');
+                $stmt->execute([$taskIdToDelete, $competitionId]);
+                $taskName = $stmt->fetchColumn();
+                if ($taskName === false) {
+                    throw new RuntimeException('Taak niet gevonden.');
+                }
+                scoring_delete_task($pdo, $taskIdToDelete, $competitionId);
+                $notice = 'Taak "' . (string)$taskName . '" verwijderd.';
             } elseif ($action === 'create_task') {
                 $taskName = trim((string)($_POST['task_name'] ?? ''));
                 $taskDate = trim((string)($_POST['task_date'] ?? ''));
@@ -180,6 +209,13 @@ try {
     $error = app_debug_enabled() ? 'Laden mislukt: ' . $e->getMessage() : 'Laden mislukt.';
 }
 
+$activeTasks = [];
+foreach ($tasks as $taskRow) {
+    if ((int)($taskRow['active'] ?? 1) === 1) {
+        $activeTasks[] = $taskRow;
+    }
+}
+
 $defaultDate = date('Y-m-d');
 $defaultOpen = date('Y-m-d\T09:00');
 $defaultClose = date('Y-m-d\T19:00');
@@ -204,7 +240,7 @@ app_page_start($competition['name'] . ' - Scoring', [
       </div>
       <div class="nav-cluster<?= $activeTab === 'new_task' ? ' has-active' : '' ?>" role="group" aria-labelledby="competition-nav-tasks">
         <span class="nav-group-label" id="competition-nav-tasks">Taken</span>
-        <?php foreach ($tasks as $taskNav): ?>
+        <?php foreach ($activeTasks as $taskNav): ?>
           <?php app_nav_link('task.php?id=' . (int)$taskNav['id'], (string)$taskNav['name'], false); ?>
         <?php endforeach; ?>
         <?php app_nav_link('competition.php?id=' . (int)$competitionId . '&tab=new_task', 'Nieuwe taak', $activeTab === 'new_task'); ?>
@@ -350,6 +386,67 @@ app_page_start($competition['name'] . ' - Scoring', [
             <?php foreach ($waypoints as $wp): ?>
               <span><?= h($wp['name']) ?> <small><?= h(app_format_compact_number($wp['latitude'], 5)) ?>, <?= h(app_format_compact_number($wp['longitude'], 5)) ?></small></span>
             <?php endforeach; ?>
+          </div>
+        <?php endif; ?>
+      </section>
+
+      <section class="card">
+        <h2>Taken beheren</h2>
+        <?php if (empty($tasks)): ?>
+          <p class="muted">Nog geen taken aangemaakt.</p>
+        <?php else: ?>
+          <div class="table-responsive">
+            <table class="striped compact-table task-management-table">
+              <thead>
+                <tr>
+                  <th>Taak</th>
+                  <th>Datum</th>
+                  <th>Status</th>
+                  <th>Data</th>
+                  <th>Actief</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($tasks as $taskRow): ?>
+                  <?php $taskIsActive = (int)($taskRow['active'] ?? 1) === 1; ?>
+                  <tr class="<?= $taskIsActive ? '' : 'is-inactive' ?>">
+                    <td>
+                      <a href="task.php?id=<?= (int)$taskRow['id'] ?>"><?= h($taskRow['name']) ?></a>
+                      <?php if (!$taskIsActive): ?>
+                        <div class="muted">Niet zichtbaar in het scorer menu.</div>
+                      <?php endif; ?>
+                    </td>
+                    <td><?= h($taskRow['task_date']) ?></td>
+                    <td><?= h($taskRow['status']) ?></td>
+                    <td>
+                      <?= (int)$taskRow['turnpoint_count'] ?> taakpunten<br>
+                      <span class="muted"><?= (int)$taskRow['flight_count'] ?> track(s)</span>
+                    </td>
+                    <td>
+                      <form method="post" class="inline task-active-form">
+                        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+                        <input type="hidden" name="action" value="toggle_task_active">
+                        <input type="hidden" name="task_id" value="<?= (int)$taskRow['id'] ?>">
+                        <input type="hidden" name="active" value="0">
+                        <label class="check-row task-active-toggle">
+                          <input type="checkbox" name="active" value="1" <?= $taskIsActive ? 'checked' : '' ?>> Actief
+                        </label>
+                        <button class="secondary" type="submit">Bijwerken</button>
+                      </form>
+                    </td>
+                    <td>
+                      <form method="post" class="inline" onsubmit="return confirm('Weet je zeker dat je deze taak wilt verwijderen? Alle taakdata wordt uit de database verwijderd. Dit kan niet ongedaan worden gemaakt.');">
+                        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+                        <input type="hidden" name="action" value="delete_task">
+                        <input type="hidden" name="task_id" value="<?= (int)$taskRow['id'] ?>">
+                        <button class="danger" type="submit">Verwijderen</button>
+                      </form>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
           </div>
         <?php endif; ?>
       </section>

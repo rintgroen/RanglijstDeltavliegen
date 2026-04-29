@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_tasks (
   window_open_at DATETIME NOT NULL,
   window_close_at DATETIME NOT NULL,
   task_type VARCHAR(30) NOT NULL DEFAULT 'race',
+  active TINYINT(1) NOT NULL DEFAULT 1,
   formula_version VARCHAR(40) NOT NULL DEFAULT 'GAP2025',
   minimum_distance_km DECIMAL(8,3) NOT NULL DEFAULT 5.000,
   nominal_distance_km DECIMAL(8,3) NOT NULL DEFAULT 50.000,
@@ -189,6 +190,7 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_tasks (
   updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_rankings_scoring_tasks_competition (competition_id),
+  KEY idx_rankings_scoring_tasks_competition_active (competition_id, active),
   KEY idx_rankings_scoring_tasks_public (status, published_at),
   CONSTRAINT fk_rankings_scoring_tasks_competition
     FOREIGN KEY (competition_id) REFERENCES rankings_scoring_competitions(id)

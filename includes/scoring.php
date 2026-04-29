@@ -711,6 +711,15 @@ function scoring_ensure_task_review_columns(PDO $pdo): void {
     }
 }
 
+function scoring_ensure_task_active_column(PDO $pdo): void {
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'active')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1 AFTER task_type', [1060], ['42S21']);
+    }
+    if (!scoring_table_index_exists($pdo, 'rankings_scoring_tasks', 'idx_rankings_scoring_tasks_competition_active')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD KEY idx_rankings_scoring_tasks_competition_active (competition_id, active)', [1061], ['42000']);
+    }
+}
+
 function scoring_task_review_status_available(PDO $pdo): bool {
     return scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'result_status');
 }
@@ -3117,6 +3126,18 @@ function scoring_load_task(PDO $pdo, int $taskId): ?array {
     $stmt->execute([$taskId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ?: null;
+}
+
+function scoring_delete_task(PDO $pdo, int $taskId, int $competitionId): void {
+    if ($taskId <= 0 || $competitionId <= 0) {
+        throw new RuntimeException('Ongeldige taak.');
+    }
+
+    $stmt = $pdo->prepare('DELETE FROM rankings_scoring_tasks WHERE id = ? AND competition_id = ?');
+    $stmt->execute([$taskId, $competitionId]);
+    if ($stmt->rowCount() < 1) {
+        throw new RuntimeException('Taak niet gevonden.');
+    }
 }
 
 function scoring_publication_snapshots_available(PDO $pdo): bool {

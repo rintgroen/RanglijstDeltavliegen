@@ -1348,6 +1348,23 @@ th {
   box-shadow: inset 3px 0 0 var(--success-border);
 }
 
+.task-management-table tr.is-inactive {
+  color: var(--muted);
+}
+
+.task-management-table tr.is-inactive a {
+  color: #526579;
+}
+
+.task-active-form {
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.task-active-toggle {
+  min-height: 2.4rem;
+}
+
 details summary {
   color: var(--primary-dark);
   cursor: pointer;
