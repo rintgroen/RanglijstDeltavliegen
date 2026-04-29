@@ -19,10 +19,10 @@ application.
 - CSV competition result upload, export, and deletion.
 - Visitor memories for competitions, with admin moderation.
 - Separate competition scoring section for scorer-managed tasks, IGC uploads,
-  review/exclusion, scoring, and published results. These scored competitions
-  are stored in separate `rankings_scoring_*` tables and do not affect the Dutch
-  ranking unless their results are manually uploaded through the existing CSV
-  workflow.
+  LiveTrack24 candidate collection, review/exclusion, scoring, and published
+  results. These scored competitions are stored in separate `rankings_scoring_*`
+  tables and do not affect the Dutch ranking unless their results are manually
+  uploaded through the existing CSV workflow.
 
 ## Requirements
 
@@ -95,6 +95,10 @@ index.php           Front controller redirecting to the public home page
    `CREATE TABLE IF NOT EXISTS`, so new scoring support tables are added without
    recreating existing data.
 
+   The LiveTrack24 track collection pages also run guarded table/column checks
+   when used. If the web database user cannot create or alter scoring tables,
+   apply the scoring schema changes with a database admin user first.
+
 5. Make uploaded memory photos writable by the web server.
 
    ```sh
@@ -146,8 +150,8 @@ is found, the uploaded result is still stored with the original pilot name.
 Admins add allowed scorer e-mail addresses in `admin/scorers.php`. A scorer can
 request a magic login link at `scoring/login.php`, create competitions, upload
 waypoints, define tasks and start gates, build the task turnpoint sequence, match
-uploaded IGC tracks, exclude tracks from scoring, score the task, and publish
-results.
+uploaded IGC tracks, review candidate tracks per pilot, score the task, and
+publish results.
 
 Waypoint upload accepts GPX, SeeYou CUP/CSV with name/lat/lon columns,
 OziExplorer WPT, and CompeGPS/FS WPT with WGS84 latitude/longitude or UTM
@@ -155,7 +159,9 @@ waypoint records.
 
 Scorers can also add IGC tracklogs directly on a task page. This is useful when
 pilots cannot upload themselves or when the scorer has downloaded the file from
-a pilot device. Pilot e-mail is optional for scorer-added tracklogs.
+a pilot device. Pilot e-mail is optional for scorer-added tracklogs. Scorers can
+also add manual minimum-distance, DNF, or ABS entries for pilots without a usable
+track.
 
 When a scorer is added, the app sends a welcome email with a link to the scoring
 login page. Scorer magic-login emails use the same mail setup.
@@ -163,6 +169,25 @@ login page. Scorer magic-login emails use the same mail setup.
 Pilots upload IGC files at `public/track_upload.php` with only their name,
 e-mail address, and tracklog. Tracklogs are matched to tasks later by time window
 and task area.
+
+Pilots can also manage a persistent track collection profile at
+`public/track_profile.php`. The profile uses a magic link sent to their e-mail
+address, stores their score display name and e-mail address, and lets them opt in
+or out of automatic LiveTrack24 collection. The app stores the public
+LiveTrack24 username, not a LiveTrack24 password.
+
+On a task review page, scorers can use `LiveTrack24 zoeken` to check opted-in
+profiles for public LiveTrack24 tracks near the task time window and task area.
+Imported LiveTrack24 IGC files are added as candidate tracklogs beside manual
+uploads. The scorer still decides which track is used for scoring.
+
+The task review screen has a pilot list beside a single-pilot review panel.
+Within each pilot group, the scorer chooses exclude, ABS, DNF, minimum distance,
+or one selected track. Other track candidates are kept as alternatives and
+excluded from scoring. The task/track map is loaded only for the active pilot
+when `Use track` is selected.
+Scoring uses the reviewed rows only; finding uploads and LiveTrack24 candidates
+is an explicit review step.
 
 The scoring engine is isolated in `includes/scoring.php` and is labelled
 `GAP2025`. It implements the first operational pass for task evaluation, point
@@ -214,7 +239,7 @@ the complete formula.
 - Ensure `public/uploads/memories/` is writable if visitors can upload memory
   photos.
 - Ensure `public/uploads/scoring/` can be created/written by the web server if
-  scorer waypoints and pilot IGC uploads are enabled.
+  scorer waypoints, pilot IGC uploads, or LiveTrack24 imports are enabled.
 - Use `ADMIN_PASSWORD_HASH` for new installs instead of the legacy
   `ADMIN_PASSWORD` fallback.
 

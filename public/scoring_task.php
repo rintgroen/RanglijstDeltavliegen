@@ -655,10 +655,17 @@ app_page_start(app_site_name() . ' - ' . $task['competition_name'] . ' ' . $task
           </thead>
           <tbody>
             <?php foreach ($results as $row): ?>
+              <?php $resultStatus = scoring_task_flight_result_status($row); ?>
               <tr>
-                <td><?= (int)$row['rank_no'] ?></td>
+                <td><?= $resultStatus === 'dnf' ? 'DNF' : (int)$row['rank_no'] ?></td>
                 <td><?= h($row['pilot_name']) ?></td>
-                <td><?= h(app_format_compact_number($row['distance_km'], 3)) ?> km<?= (int)$row['reached_goal'] === 1 ? ' <span class="muted">goal</span>' : '' ?></td>
+                <td>
+                  <?php if ($resultStatus === 'dnf'): ?>
+                    DNF
+                  <?php else: ?>
+                    <?= h(app_format_compact_number($row['distance_km'], 3)) ?> km<?= (int)$row['reached_goal'] === 1 ? ' <span class="muted">goal</span>' : '' ?>
+                  <?php endif; ?>
+                </td>
                 <td><?= h(scoring_format_duration($row['time_seconds'] !== null ? (int)$row['time_seconds'] : null)) ?></td>
                 <td><?= h(app_format_compact_number($row['distance_points'], 1)) ?></td>
                 <td><?= h(app_format_compact_number($row['time_points'], 1)) ?></td>

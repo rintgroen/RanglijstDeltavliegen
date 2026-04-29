@@ -4,11 +4,38 @@ require_once __DIR__ . '/../includes/scoring.php';
 
 app_enable_debug();
 $pdo = app_db_or_fail();
-$scorer = scoring_require_scorer($pdo);
+$wantsReviewMap = isset($_GET['review_map']);
+$scorer = $wantsReviewMap ? scoring_current_scorer($pdo) : scoring_require_scorer($pdo);
+if (!$scorer) {
+    header('Content-Type: application/json; charset=utf-8');
+    http_response_code(401);
+    echo json_encode(['error' => 'Log opnieuw in om de reviewkaart te laden.'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
 $csrf = app_csrf_token();
+$tracklogSourceAvailable = false;
+$taskReviewStatusAvailable = false;
+$taskIdentityReviewAvailable = false;
+try {
+    scoring_ensure_track_collection_tables($pdo);
+    scoring_ensure_task_review_columns($pdo);
+    $tracklogSourceAvailable = scoring_tracklog_source_columns_available($pdo);
+    $taskReviewStatusAvailable = scoring_task_review_status_available($pdo);
+    $taskIdentityReviewAvailable = scoring_task_identity_review_available($pdo);
+} catch (Throwable $e) {
+    $tracklogSourceAvailable = false;
+    $taskReviewStatusAvailable = false;
+    $taskIdentityReviewAvailable = false;
+}
 $taskId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 $task = $taskId > 0 ? scoring_load_task($pdo, $taskId) : null;
 if (!$task || !scoring_can_edit_competition($pdo, (int)$task['competition_id'], (int)$scorer['id'])) {
+    if ($wantsReviewMap) {
+        header('Content-Type: application/json; charset=utf-8');
+        http_response_code(404);
+        echo json_encode(['error' => 'Taak niet gevonden.'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
     http_response_code(404);
     app_page_start('Taak niet gevonden - Scoring', [
         'active_scoring' => 'dashboard',
@@ -18,6 +45,43 @@ if (!$task || !scoring_can_edit_competition($pdo, (int)$task['competition_id'], 
     app_page_end();
     exit;
 }
+
+if ($wantsReviewMap) {
+    header('Content-Type: application/json; charset=utf-8');
+    try {
+        $flightId = isset($_GET['flight_id']) ? (int)$_GET['flight_id'] : 0;
+        $turnpoints = scoring_load_task_turnpoints($pdo, $taskId);
+        $taskMap = !empty($turnpoints) ? scoring_task_map_data($turnpoints) : null;
+        if (!$taskMap) {
+            throw new RuntimeException('Geen taakkaart beschikbaar.');
+        }
+
+        $stmt = $pdo->prepare(
+        'SELECT f.*, tl.original_filename, tl.storage_path, tl.fix_count
+             FROM rankings_scoring_task_flights f
+             JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
+             WHERE f.id = ? AND f.task_id = ?
+             LIMIT 1'
+        );
+        $stmt->execute([$flightId, $taskId]);
+        $flight = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$flight || !scoring_task_flight_is_track_candidate($flight)) {
+            throw new RuntimeException('Track niet gevonden.');
+        }
+
+        $payload = scoring_task_tracklog_review_map_data($pdo, $flight, $taskMap, 350);
+        if (!$payload) {
+            $payload = ['task' => $taskMap, 'track' => null];
+        }
+
+        echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(400);
+        echo json_encode(['error' => $e->getMessage()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
 $competition = scoring_load_competition($pdo, (int)$task['competition_id']);
 $taskTabs = [
     'settings' => '1. Taak instellen en delen',
@@ -34,6 +98,7 @@ $taskTabByAction = [
     'delete_turnpoint' => 'settings',
     'update_turnpoints' => 'settings',
     'match_tracks' => 'review',
+    'collect_livetrack24' => 'review',
     'add_manual_flight' => 'review',
     'save_review' => 'review',
     'score_task' => 'scoring',
@@ -163,6 +228,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $task = scoring_load_task($pdo, $taskId);
                 $matched = scoring_match_task_tracklogs($pdo, $task, $turnpoints);
                 $notice = $matched . ' tracklog(s) gekoppeld aan deze taak.';
+            } elseif ($action === 'collect_livetrack24') {
+                $turnpoints = scoring_load_task_turnpoints($pdo, $taskId);
+                $task = scoring_load_task($pdo, $taskId);
+                $summary = scoring_import_livetrack24_for_task($pdo, $task, $turnpoints);
+                $matchedUploads = scoring_match_task_tracklogs($pdo, $task, $turnpoints);
+                $notice = 'LiveTrack24 gecontroleerd: '
+                    . (int)$summary['profiles_checked'] . ' profiel(en), '
+                    . (int)$summary['tracks_seen'] . ' track(s), '
+                    . (int)$summary['candidates'] . ' kandidaat/kandidaten, '
+                    . (int)$summary['imported'] . ' nieuw geimporteerd.';
+                $notice .= ' Uploads gecontroleerd: ' . (int)$matchedUploads . ' kandidaat/kandidaten gekoppeld.';
+                if ((int)$summary['already_linked'] > 0) {
+                    $notice .= ' ' . (int)$summary['already_linked'] . ' bestaande kandidaat/kandidaten gekoppeld.';
+                }
+                if ((int)$summary['errors'] > 0) {
+                    $notice .= ' ' . (int)$summary['errors'] . ' fout(en).';
+                }
             } elseif ($action === 'add_manual_flight') {
                 $manualType = (string)($_POST['manual_entry_type'] ?? 'tracklog');
                 $pilotName = trim((string)($_POST['manual_pilot_name'] ?? ''));
@@ -178,12 +260,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if (!$tracklog) {
                         throw new RuntimeException('Tracklog kon niet worden gekoppeld.');
                     }
-                    $insert = $pdo->prepare(
-                        'INSERT INTO rankings_scoring_task_flights (task_id, tracklog_id, pilot_name, pilot_email)
-                         VALUES (?, ?, ?, ?)
-                         ON DUPLICATE KEY UPDATE pilot_name = VALUES(pilot_name), pilot_email = VALUES(pilot_email), is_excluded = 0, exclude_reason = NULL'
-                    );
-                    $insert->execute([$taskId, $tracklogId, $tracklog['pilot_name'], $tracklog['pilot_email']]);
+                    if ($taskReviewStatusAvailable) {
+                        $insert = $pdo->prepare(
+                            'INSERT INTO rankings_scoring_task_flights (task_id, tracklog_id, pilot_name, pilot_email, result_status)
+                             VALUES (?, ?, ?, ?, ?)
+                             ON DUPLICATE KEY UPDATE pilot_name = VALUES(pilot_name), pilot_email = VALUES(pilot_email), result_status = VALUES(result_status), is_excluded = 0, exclude_reason = NULL'
+                        );
+                        $insert->execute([$taskId, $tracklogId, $tracklog['pilot_name'], $tracklog['pilot_email'], 'track']);
+                    } else {
+                        $insert = $pdo->prepare(
+                            'INSERT INTO rankings_scoring_task_flights (task_id, tracklog_id, pilot_name, pilot_email)
+                             VALUES (?, ?, ?, ?)
+                             ON DUPLICATE KEY UPDATE pilot_name = VALUES(pilot_name), pilot_email = VALUES(pilot_email), is_excluded = 0, exclude_reason = NULL'
+                        );
+                        $insert->execute([$taskId, $tracklogId, $tracklog['pilot_name'], $tracklog['pilot_email']]);
+                    }
                     if (scoring_pilot_identities_available($pdo)) {
                         $lookup = $pdo->prepare('SELECT id FROM rankings_scoring_task_flights WHERE task_id = ? AND tracklog_id = ? LIMIT 1');
                         $lookup->execute([$taskId, $tracklogId]);
@@ -193,43 +284,172 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                     $notice = 'Tracklog van ' . $tracklog['pilot_name'] . ' is toegevoegd aan deze taak.';
-                } elseif ($manualType === 'minimum_distance') {
+                } elseif (in_array($manualType, ['minimum_distance', 'dnf', 'abs'], true)) {
                     $task = scoring_load_task($pdo, $taskId);
                     if (!$task) {
                         throw new RuntimeException('Taak niet gevonden.');
                     }
-                    $flightId = scoring_add_manual_minimum_flight($pdo, $task, $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
+                    $flightId = scoring_add_manual_status_flight($pdo, $task, $manualType, $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
                     if (scoring_pilot_identities_available($pdo) && $flightId > 0) {
                         scoring_assign_known_task_flight_identity($pdo, (int)$task['competition_id'], $flightId, $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
                     }
-                    $notice = 'Minimumafstand voor ' . $pilotName . ' is toegevoegd aan deze taak.';
+                    $notice = scoring_task_flight_status_label($manualType) . ' voor ' . $pilotName . ' is toegevoegd aan deze taak.';
                 } else {
-                    throw new RuntimeException('Kies tracklog uploaden of minimumafstand.');
+                    throw new RuntimeException('Kies tracklog uploaden, minimumafstand, DNF of ABS.');
                 }
             } elseif ($action === 'save_review') {
-                $stmt = $pdo->prepare('SELECT id, pilot_name, pilot_email FROM rankings_scoring_task_flights WHERE task_id = ?');
+                $reviewStatusSelect = $taskReviewStatusAvailable ? 'f.result_status' : "'track' AS result_status";
+                $stmt = $pdo->prepare(
+                    'SELECT f.id, f.pilot_name, f.pilot_email, ' . $reviewStatusSelect . ', tl.storage_path, tl.original_filename
+                     FROM rankings_scoring_task_flights f
+                     JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
+                     WHERE f.task_id = ?'
+                );
                 $stmt->execute([$taskId]);
                 $flightRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                $excluded = isset($_POST['exclude']) && is_array($_POST['exclude']) ? array_map('intval', array_keys($_POST['exclude'])) : [];
                 $reasons = isset($_POST['exclude_reason']) && is_array($_POST['exclude_reason']) ? $_POST['exclude_reason'] : [];
-                $identitySelections = isset($_POST['pilot_identity']) && is_array($_POST['pilot_identity']) ? $_POST['pilot_identity'] : [];
-                $upd = $pdo->prepare('UPDATE rankings_scoring_task_flights SET is_excluded = ?, exclude_reason = ? WHERE id = ? AND task_id = ?');
+                $flightGroups = isset($_POST['flight_group']) && is_array($_POST['flight_group']) ? $_POST['flight_group'] : [];
+                $reviewActions = isset($_POST['review_action']) && is_array($_POST['review_action']) ? $_POST['review_action'] : [];
+                $trackChoices = isset($_POST['track_choice']) && is_array($_POST['track_choice']) ? $_POST['track_choice'] : [];
+                $identitySelections = isset($_POST['pilot_identity_group']) && is_array($_POST['pilot_identity_group']) ? $_POST['pilot_identity_group'] : [];
+                $identityReviewedSelections = isset($_POST['identity_reviewed_group']) && is_array($_POST['identity_reviewed_group']) ? $_POST['identity_reviewed_group'] : [];
+                $groupsByKey = [];
                 foreach ($flightRows as $flightRow) {
                     $flightId = (int)$flightRow['id'];
-                    $isExcluded = in_array($flightId, $excluded, true) ? 1 : 0;
-                    $reason = trim((string)($reasons[$flightId] ?? ''));
-                    $upd->execute([$isExcluded, $reason !== '' ? $reason : null, $flightId, $taskId]);
-                    if (!$isExcluded && scoring_pilot_identities_available($pdo)) {
-                        $selection = (string)($identitySelections[$flightId] ?? '');
-                        if ($selection !== '') {
-                            scoring_assign_task_flight_identifier_selection($pdo, (int)$task['competition_id'], $flightId, $selection, (string)$flightRow['pilot_name'], $flightRow['pilot_email'] ?? null);
+                    $groupKey = (string)($flightGroups[$flightId] ?? ('flight:' . $flightId));
+                    if (!isset($groupsByKey[$groupKey])) {
+                        $groupsByKey[$groupKey] = [
+                            'key' => $groupKey,
+                            'pilot_name' => (string)$flightRow['pilot_name'],
+                            'pilot_email' => $flightRow['pilot_email'] ?? null,
+                            'rows' => [],
+                        ];
+                    }
+                    $groupsByKey[$groupKey]['rows'][] = $flightRow;
+                }
+                $taskForReview = scoring_load_task($pdo, $taskId);
+                if (!$taskForReview) {
+                    throw new RuntimeException('Taak niet gevonden.');
+                }
+                $manualSelectionByGroup = [];
+                foreach ($groupsByKey as $groupKey => &$group) {
+                    $reviewAction = (string)($reviewActions[$groupKey] ?? 'track');
+                    if (!in_array($reviewAction, ['track', 'minimum_distance', 'dnf', 'abs', 'exclude'], true)) {
+                        $reviewAction = 'track';
+                    }
+                    if (in_array($reviewAction, ['minimum_distance', 'dnf', 'abs'], true)) {
+                        $manualFlightId = 0;
+                        foreach ($group['rows'] as $row) {
+                            if (scoring_task_flight_result_status($row) === $reviewAction) {
+                                $manualFlightId = (int)$row['id'];
+                                break;
+                            }
+                        }
+                        if ($manualFlightId <= 0) {
+                            $manualFlightId = scoring_add_manual_status_flight(
+                                $pdo,
+                                $taskForReview,
+                                $reviewAction,
+                                (string)$group['pilot_name'],
+                                scoring_pilot_identity_normalized_email($group['pilot_email'] ?? null) !== '' ? (string)$group['pilot_email'] : null
+                            );
+                            $group['rows'][] = [
+                                'id' => $manualFlightId,
+                                'pilot_name' => $group['pilot_name'],
+                                'pilot_email' => $group['pilot_email'],
+                                'result_status' => $reviewAction,
+                            ];
+                        }
+                        $manualSelectionByGroup[$groupKey] = $manualFlightId;
+                    }
+                }
+                unset($group);
+
+                if ($taskReviewStatusAvailable && $taskIdentityReviewAvailable) {
+                    $upd = $pdo->prepare('UPDATE rankings_scoring_task_flights SET result_status = ?, identity_reviewed = ?, is_excluded = ?, exclude_reason = ? WHERE id = ? AND task_id = ?');
+                } elseif ($taskReviewStatusAvailable) {
+                    $upd = $pdo->prepare('UPDATE rankings_scoring_task_flights SET result_status = ?, is_excluded = ?, exclude_reason = ? WHERE id = ? AND task_id = ?');
+                } elseif ($taskIdentityReviewAvailable) {
+                    $upd = $pdo->prepare('UPDATE rankings_scoring_task_flights SET identity_reviewed = ?, is_excluded = ?, exclude_reason = ? WHERE id = ? AND task_id = ?');
+                } else {
+                    $upd = $pdo->prepare('UPDATE rankings_scoring_task_flights SET is_excluded = ?, exclude_reason = ? WHERE id = ? AND task_id = ?');
+                }
+                foreach ($groupsByKey as $groupKey => $group) {
+                    $reviewAction = (string)($reviewActions[$groupKey] ?? 'track');
+                    if (!in_array($reviewAction, ['track', 'minimum_distance', 'dnf', 'abs', 'exclude'], true)) {
+                        $reviewAction = 'track';
+                    }
+                    $identityReviewed = isset($identityReviewedSelections[$groupKey]) ? 1 : 0;
+                    $selectedFlightId = 0;
+                    if ($reviewAction === 'track') {
+                        $selectedFlightId = max(0, (int)($trackChoices[$groupKey] ?? 0));
+                        if ($selectedFlightId <= 0) {
+                            throw new RuntimeException('Kies een track voor ' . $group['pilot_name'] . ' of selecteer een andere reviewstatus.');
+                        }
+                        $trackChoiceValid = false;
+                        foreach ($group['rows'] as $row) {
+                            if ((int)$row['id'] === $selectedFlightId && scoring_task_flight_is_track_candidate($row)) {
+                                $trackChoiceValid = true;
+                                break;
+                            }
+                        }
+                        if (!$trackChoiceValid) {
+                            throw new RuntimeException('De gekozen track hoort niet bij ' . $group['pilot_name'] . '.');
+                        }
+                    } elseif (isset($manualSelectionByGroup[$groupKey])) {
+                        $selectedFlightId = (int)$manualSelectionByGroup[$groupKey];
+                    }
+
+                    foreach ($group['rows'] as $flightRow) {
+                        $flightId = (int)$flightRow['id'];
+                        $resultStatus = scoring_task_flight_result_status($flightRow);
+                        $newResultStatus = $resultStatus;
+                        $isSelected = $selectedFlightId > 0 && $flightId === $selectedFlightId;
+                        $isExcluded = $isSelected ? 0 : 1;
+                        $reason = trim((string)($reasons[$flightId] ?? ''));
+                        if (scoring_task_flight_is_track_candidate($flightRow)) {
+                            $newResultStatus = ($reviewAction === 'track' && $isSelected) ? 'track' : 'alternate';
+                        }
+                        if ($reviewAction === 'exclude') {
+                            $isExcluded = 1;
+                            $reason = $reason !== '' ? $reason : 'Uitgesloten';
+                        } elseif ($reviewAction === 'abs' && $isSelected) {
+                            $isExcluded = 1;
+                            $reason = $reason !== '' ? $reason : 'ABS';
+                        } elseif (!$isSelected) {
+                            $reason = $reason !== '' ? $reason : 'Alternatieve kandidaat';
+                        } elseif ($resultStatus === 'abs') {
+                            $isExcluded = 1;
+                            $reason = $reason !== '' ? $reason : 'ABS';
+                        } else {
+                            $reason = '';
+                        }
+                        if ($taskReviewStatusAvailable && $taskIdentityReviewAvailable) {
+                            $upd->execute([$newResultStatus, $identityReviewed, $isExcluded, $reason !== '' ? $reason : null, $flightId, $taskId]);
+                        } elseif ($taskReviewStatusAvailable) {
+                            $upd->execute([$newResultStatus, $isExcluded, $reason !== '' ? $reason : null, $flightId, $taskId]);
+                        } elseif ($taskIdentityReviewAvailable) {
+                            $upd->execute([$identityReviewed, $isExcluded, $reason !== '' ? $reason : null, $flightId, $taskId]);
+                        } else {
+                            $upd->execute([$isExcluded, $reason !== '' ? $reason : null, $flightId, $taskId]);
+                        }
+                    }
+
+                    if ($selectedFlightId > 0 && scoring_pilot_identities_available($pdo)) {
+                        $selection = (string)($identitySelections[$groupKey] ?? '');
+                        if ($selection !== '' && $reviewAction !== 'exclude') {
+                            scoring_assign_task_flight_identifier_selection($pdo, (int)$task['competition_id'], $selectedFlightId, $selection, (string)$group['pilot_name'], $group['pilot_email'] ?? null);
                         }
                     }
                 }
                 $notice = 'Review opgeslagen.';
             } elseif ($action === 'score_task') {
                 $summary = scoring_score_task($pdo, $taskId);
-                $notice = 'Taak gescoord: ' . (int)$summary['pilots_scored'] . ' piloten, taakvaliditeit ' . app_format_compact_number($summary['task_validity'] * 100, 1) . '%.';
+                $notice = 'Taak gescoord: ' . (int)$summary['pilots_scored'] . ' piloten';
+                if (!empty($summary['pilots_dnf'])) {
+                    $notice .= ', ' . (int)$summary['pilots_dnf'] . ' DNF';
+                }
+                $notice .= ', taakvaliditeit ' . app_format_compact_number($summary['task_validity'] * 100, 1) . '%.';
                 if ($task['status'] === 'published') {
                     $notice .= ' De publicatie blijft ongewijzigd tot je Publicatie bijwerken kiest.';
                 }
@@ -252,6 +472,8 @@ $turnpoints = scoring_load_task_turnpoints($pdo, $taskId);
 $gates = scoring_load_task_gates($pdo, $taskId);
 $waypoints = [];
 $flights = [];
+$reviewGroups = [];
+$reviewGroupStates = [];
 $pilotIdentityAvailable = scoring_pilot_identities_available($pdo);
 $pilotIdentifierOptions = [];
 $results = [];
@@ -262,10 +484,15 @@ try {
 
     $pilotIdentifierOptions = scoring_load_competition_pilot_identifier_options($pdo, $task);
 
+    $tracklogSourceSelect = $tracklogSourceAvailable
+        ? ', tl.source, tl.source_external_id, tl.source_url'
+        : ", 'manual_upload' AS source, NULL AS source_external_id, NULL AS source_url";
+
     if ($pilotIdentityAvailable) {
         $stmt = $pdo->prepare(
             'SELECT f.*, tl.original_filename, tl.storage_path, tl.fix_count, tl.uploaded_at, tl.first_fix_at, tl.last_fix_at,
                     fi.identity_id, pi.display_name AS identity_display_name, pi.primary_email AS identity_primary_email
+                    ' . $tracklogSourceSelect . '
              FROM rankings_scoring_task_flights f
              JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
              LEFT JOIN rankings_scoring_task_flight_identities fi ON fi.flight_id = f.id
@@ -276,6 +503,7 @@ try {
     } else {
         $stmt = $pdo->prepare(
             'SELECT f.*, tl.original_filename, tl.storage_path, tl.fix_count, tl.uploaded_at, tl.first_fix_at, tl.last_fix_at
+                    ' . $tracklogSourceSelect . '
              FROM rankings_scoring_task_flights f
              JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
              WHERE f.task_id = ?
@@ -293,12 +521,76 @@ try {
         }
         unset($flight);
     }
+    foreach ($flights as &$flight) {
+        if (!isset($flight['result_status'])) {
+            $flight['result_status'] = 'track';
+        }
+    }
+    unset($flight);
+    $reviewGroups = scoring_build_task_review_groups($flights);
+    $reviewGroupStates = [];
+    foreach ($reviewGroups as $group) {
+        $groupKey = (string)$group['key'];
+        $trackCandidates = [];
+        $selectedTrackId = 0;
+        $selectedAction = 'exclude';
+        foreach ($group['flights'] as $candidate) {
+            if (scoring_task_flight_is_track_candidate($candidate)) {
+                $trackCandidates[(int)$candidate['id']] = $candidate;
+            }
+        }
+        foreach (['track', 'minimum_distance', 'dnf', 'abs'] as $preferredStatus) {
+            foreach ($group['flights'] as $candidate) {
+                $candidateStatus = scoring_task_flight_result_status($candidate);
+                if ((int)$candidate['is_excluded'] === 0 && $candidateStatus === $preferredStatus) {
+                    $selectedAction = $candidateStatus;
+                    if ($candidateStatus === 'track') {
+                        $selectedTrackId = (int)$candidate['id'];
+                    }
+                    break 2;
+                }
+            }
+        }
+        if ($selectedAction === 'exclude') {
+            foreach ($group['flights'] as $candidate) {
+                if (scoring_task_flight_result_status($candidate) === 'abs') {
+                    $selectedAction = 'abs';
+                    break;
+                }
+            }
+        }
+        if ($selectedTrackId <= 0 && !empty($trackCandidates)) {
+            $selectedTrackId = (int)array_key_first($trackCandidates);
+        }
+        $identityReviewed = false;
+        foreach ($group['flights'] as $candidate) {
+            if ((int)($candidate['identity_reviewed'] ?? 0) === 1) {
+                $identityReviewed = true;
+                break;
+            }
+        }
+        $identifierSelection = 'new';
+        foreach ($group['flights'] as $candidate) {
+            if (!empty($candidate['suggested_identifier'])) {
+                $identifierSelection = (string)$candidate['suggested_identifier'];
+                break;
+            }
+        }
+        $reviewGroupStates[$groupKey] = [
+            'track_candidates' => $trackCandidates,
+            'track_count' => count($trackCandidates),
+            'selected_track_id' => $selectedTrackId,
+            'selected_action' => $selectedAction,
+            'identity_reviewed' => $identityReviewed,
+            'identifier_selection' => $identifierSelection,
+        ];
+    }
 
     $stmt = $pdo->prepare(
         'SELECT *
          FROM rankings_scoring_task_flights
          WHERE task_id = ? AND is_excluded = 0 AND scored_at IS NOT NULL
-         ORDER BY rank_no ASC, total_points DESC, pilot_name ASC'
+         ORDER BY rank_no IS NULL ASC, rank_no ASC, total_points DESC, pilot_name ASC'
     );
     $stmt->execute([$taskId]);
     $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -561,63 +853,152 @@ app_page_start($task['name'] . ' - Scoring', [
     <div class="section-header">
       <div>
         <h2>Track review</h2>
-        <p class="muted">Tracks worden automatisch gekoppeld als hun tijdvenster en gebied bij deze taak passen.</p>
+        <p class="muted">Zoek uploads en LiveTrack24-kandidaten, kies per piloot welke rij voor de score telt, en laat alternatieven staan als fallback.</p>
       </div>
-      <form method="post">
-        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-        <input type="hidden" name="action" value="match_tracks">
-        <button type="submit">Tracks zoeken</button>
-      </form>
+      <div class="inline">
+        <form method="post">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="match_tracks">
+          <button type="submit">Uploads zoeken</button>
+        </form>
+        <form method="post">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="collect_livetrack24">
+          <button class="secondary" type="submit">LiveTrack24 zoeken</button>
+        </form>
+      </div>
     </div>
 
-    <h3>Beschikbare tracks</h3>
-    <?php if (empty($flights)): ?>
+    <h3>Geïdentificeerde piloten</h3>
+    <?php if (empty($reviewGroups)): ?>
       <p class="muted">Nog geen gekoppelde tracklogs.</p>
     <?php else: ?>
       <form method="post">
         <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
         <input type="hidden" name="action" value="save_review">
-        <div class="table-responsive">
-          <table class="striped">
-            <thead>
-              <tr>
-                <th>Piloot</th>
-                <?php if ($pilotIdentityAvailable): ?><th>Identifier</th><?php endif; ?>
-                <th>Track</th>
-                <th>Fixes</th>
-                <th>Uitsluiten</th>
-                <th>Reden</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($flights as $flight): ?>
-                <?php $isManualMinimum = scoring_is_manual_minimum_tracklog($flight); ?>
-                <tr>
-                  <td><?= h($flight['pilot_name']) ?><br><span class="muted"><?= h(scoring_display_pilot_email($flight['pilot_email'])) ?></span></td>
-                  <?php if ($pilotIdentityAvailable): ?>
-                    <?php $selectedIdentifier = (string)($flight['suggested_identifier'] ?? 'new'); ?>
-                    <td>
-                      <select name="pilot_identity[<?= (int)$flight['id'] ?>]">
-                        <?php foreach ($pilotIdentifierOptions as $identifierOption): ?>
-                          <option value="<?= h($identifierOption['value']) ?>" <?= $selectedIdentifier === (string)$identifierOption['value'] ? 'selected' : '' ?>><?= h($identifierOption['label']) ?></option>
-                        <?php endforeach; ?>
-                        <option value="new" <?= $selectedIdentifier === 'new' ? 'selected' : '' ?>>Nieuwe identifier: <?= h($flight['pilot_name']) ?></option>
-                      </select>
-                    </td>
-                  <?php endif; ?>
-                  <td>
-                    <?= $isManualMinimum ? 'Minimumafstand' : h($flight['original_filename']) ?>
-                    <br><span class="muted"><?= $isManualMinimum ? 'handmatig zonder tracklog' : h(scoring_utc_sql_to_display($flight['uploaded_at'])) ?></span>
-                  </td>
-                  <td>
-                    <?= $isManualMinimum ? '-' : h(scoring_utc_sql_to_display($flight['first_fix_at']) . ' - ' . scoring_utc_sql_to_display($flight['last_fix_at'])) ?>
-                  </td>
-                  <td><input type="checkbox" name="exclude[<?= (int)$flight['id'] ?>]" <?= (int)$flight['is_excluded'] === 1 ? 'checked' : '' ?>></td>
-                  <td><input type="text" name="exclude_reason[<?= (int)$flight['id'] ?>]" value="<?= h($flight['exclude_reason'] ?? '') ?>" maxlength="255"></td>
-                </tr>
+        <div class="review-workspace" data-review-workspace>
+          <nav class="review-pilot-list" aria-label="Piloten in review">
+            <?php foreach ($reviewGroups as $groupIndex => $group): ?>
+              <?php
+                $groupKey = (string)$group['key'];
+                $groupDomId = 'review-group-' . md5($groupKey);
+                $groupState = $reviewGroupStates[$groupKey] ?? [];
+                $trackCount = (int)($groupState['track_count'] ?? 0);
+                $listStatus = (string)($groupState['selected_action'] ?? 'exclude');
+                $identityReviewed = !empty($groupState['identity_reviewed']);
+                $listStatusClass = $listStatus === 'exclude'
+                    ? ' is-review-excluded'
+                    : ($identityReviewed ? ' is-review-ready' : ' is-review-pending');
+              ?>
+              <button
+                type="button"
+                class="review-pilot-button<?= $listStatusClass ?><?= $groupIndex === 0 ? ' is-active' : '' ?>"
+                data-review-target="<?= h($groupDomId) ?>"
+                aria-controls="<?= h($groupDomId) ?>"
+                aria-selected="<?= $groupIndex === 0 ? 'true' : 'false' ?>"
+              >
+                <span class="review-pilot-line">
+                  <span class="review-pilot-name"><?= h($group['label']) ?></span>
+                  <span class="review-pilot-separator" aria-hidden="true">|</span>
+                  <span class="review-pilot-count"><?= $trackCount ?> track(s)</span>
+                </span>
+                <span class="review-pilot-email"><?= h(scoring_display_pilot_email($group['email'] ?? null)) ?></span>
+              </button>
+            <?php endforeach; ?>
+          </nav>
+          <div class="review-detail">
+          <?php foreach ($reviewGroups as $groupIndex => $group): ?>
+            <?php
+              $groupKey = (string)$group['key'];
+              $groupDomId = 'review-group-' . md5($groupKey);
+              $groupState = $reviewGroupStates[$groupKey] ?? [];
+              $trackCandidates = $groupState['track_candidates'] ?? [];
+              $selectedTrackId = (int)($groupState['selected_track_id'] ?? 0);
+              $selectedAction = (string)($groupState['selected_action'] ?? 'exclude');
+              $identityReviewed = !empty($groupState['identity_reviewed']);
+              $identifierSelection = (string)($groupState['identifier_selection'] ?? 'new');
+            ?>
+            <section
+              class="review-detail-panel"
+              id="<?= h($groupDomId) ?>"
+              data-review-panel="<?= h($groupDomId) ?>"
+              <?= $groupIndex !== 0 ? 'hidden' : '' ?>
+            >
+              <div class="review-detail-header">
+                <div>
+                  <h4><?= h($group['label']) ?></h4>
+                  <p class="muted"><?= h(scoring_display_pilot_email($group['email'] ?? null)) ?> · <?= count($trackCandidates) ?> track(s)</p>
+                </div>
+              </div>
+              <?php foreach ($group['flights'] as $flight): ?>
+                <input type="hidden" name="flight_group[<?= (int)$flight['id'] ?>]" value="<?= h($groupKey) ?>">
               <?php endforeach; ?>
-            </tbody>
-          </table>
+              <?php if ($pilotIdentityAvailable): ?>
+                <label>Identifier
+                  <select name="pilot_identity_group[<?= h($groupKey) ?>]">
+                    <?php foreach ($pilotIdentifierOptions as $identifierOption): ?>
+                      <option value="<?= h($identifierOption['value']) ?>" <?= $identifierSelection === (string)$identifierOption['value'] ? 'selected' : '' ?>><?= h($identifierOption['label']) ?></option>
+                    <?php endforeach; ?>
+                    <option value="new" <?= $identifierSelection === 'new' ? 'selected' : '' ?>>Nieuwe identifier: <?= h($group['label']) ?></option>
+                  </select>
+                </label>
+                <label class="check-row review-identity-reviewed">
+                  <input type="checkbox" name="identity_reviewed_group[<?= h($groupKey) ?>]" value="1" data-review-identity-reviewed <?= $identityReviewed ? 'checked' : '' ?>>
+                  Piloot en vlucht gecontroleerd
+                </label>
+              <?php endif; ?>
+
+              <fieldset class="review-decision-list">
+                <legend>Review keuze</legend>
+                <label><input type="radio" name="review_action[<?= h($groupKey) ?>]" value="exclude" data-review-action <?= $selectedAction === 'exclude' ? 'checked' : '' ?>> Exclude</label>
+                <label><input type="radio" name="review_action[<?= h($groupKey) ?>]" value="abs" data-review-action <?= $selectedAction === 'abs' ? 'checked' : '' ?>> Absent</label>
+                <label><input type="radio" name="review_action[<?= h($groupKey) ?>]" value="dnf" data-review-action <?= $selectedAction === 'dnf' ? 'checked' : '' ?>> Did not fly</label>
+                <label><input type="radio" name="review_action[<?= h($groupKey) ?>]" value="minimum_distance" data-review-action <?= $selectedAction === 'minimum_distance' ? 'checked' : '' ?>> Minimum distance</label>
+                <label><input type="radio" name="review_action[<?= h($groupKey) ?>]" value="track" data-review-action <?= $selectedAction === 'track' ? 'checked' : '' ?> <?= empty($trackCandidates) ? 'disabled' : '' ?>> Use track</label>
+              </fieldset>
+
+              <div class="review-track-controls" data-review-track-controls>
+                <label>Track
+                  <select name="track_choice[<?= h($groupKey) ?>]" data-review-track-select>
+                    <?php foreach ($trackCandidates as $flight): ?>
+                  <?php
+                    $flightId = (int)$flight['id'];
+                    $sourceLabel = 'Upload';
+                    if (($flight['source'] ?? '') === 'livetrack24') {
+                        $sourceLabel = 'LiveTrack24';
+                    }
+                    $filenameLabel = trim((string)($flight['original_filename'] ?? ''));
+                    $timeLabel = scoring_utc_sql_to_display($flight['first_fix_at']);
+                    if (!empty($flight['last_fix_at'])) {
+                        $timeLabel .= ' - ' . scoring_utc_sql_to_display($flight['last_fix_at']);
+                    }
+                    $trackLabelParts = [$sourceLabel];
+                    if ($filenameLabel !== '') {
+                        $trackLabelParts[] = $filenameLabel;
+                    }
+                    $trackLabelParts[] = (int)$flight['fix_count'] . ' fixes';
+                    $trackLabelParts[] = $timeLabel;
+                    if (($flight['source'] ?? '') === 'livetrack24' && !empty($flight['source_external_id'])) {
+                        $trackLabelParts[] = 'LT24 #' . $flight['source_external_id'];
+                    } elseif (!empty($flight['uploaded_at'])) {
+                        $trackLabelParts[] = 'upload ' . scoring_utc_sql_to_display($flight['uploaded_at']);
+                    }
+                    $trackLabelParts[] = 'kandidaat #' . $flightId;
+                    $trackLabel = implode(' · ', $trackLabelParts);
+                  ?>
+                      <option value="<?= $flightId ?>" data-map-url="task.php?id=<?= (int)$taskId ?>&amp;review_map=1&amp;flight_id=<?= $flightId ?>" <?= $selectedTrackId === $flightId ? 'selected' : '' ?>><?= h($trackLabel) ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                </label>
+              </div>
+              <div class="review-map-shell" data-review-map-shell>
+                <div class="review-map" data-review-map aria-label="Kaart met taak en track">
+                  <span class="track-preview-loading">Kaart laden...</span>
+                </div>
+              </div>
+            </section>
+          <?php endforeach; ?>
+          </div>
         </div>
         <p><button type="submit">Review opslaan</button></p>
       </form>
@@ -631,6 +1012,8 @@ app_page_start($task['name'] . ' - Scoring', [
         <div class="checkbox-grid">
           <label><input type="radio" name="manual_entry_type" value="tracklog" checked> Tracklog uploaden</label>
           <label><input type="radio" name="manual_entry_type" value="minimum_distance"> Minimumafstand</label>
+          <label><input type="radio" name="manual_entry_type" value="dnf"> DNF</label>
+          <label><input type="radio" name="manual_entry_type" value="abs"> ABS</label>
         </div>
         <div class="grid">
           <label>Piloot
@@ -648,7 +1031,7 @@ app_page_start($task['name'] . ' - Scoring', [
         </div>
         <p><button type="submit">Handmatig toevoegen</button></p>
       </form>
-      <p class="muted">Upload een IGC-tracklog of voeg minimumafstand toe voor een piloot zonder bruikbare tracklog.</p>
+      <p class="muted">Upload een IGC-tracklog, voeg minimumafstand toe, of registreer DNF/ABS voor piloten zonder scoring track.</p>
     </div>
   </section>
     </div>
@@ -670,6 +1053,9 @@ app_page_start($task['name'] . ' - Scoring', [
             Validiteit <?= h(app_format_compact_number(($summary['task_validity'] ?? 0) * 100, 1)) ?>%,
             beste afstand <?= h(app_format_compact_number($summary['best_distance_km'] ?? 0, 3)) ?> km,
             piloten <?= (int)($summary['pilots_scored'] ?? 0) ?>.
+            <?php if (!empty($summary['pilots_dnf'])): ?>
+              DNF <?= (int)$summary['pilots_dnf'] ?>.
+            <?php endif; ?>
             <?php if (!empty($summary['available_points']) && is_array($summary['available_points'])): ?>
               Beschikbaar:
               afstand <?= h(app_format_compact_number($summary['available_points']['distance'] ?? 0, 1)) ?>,

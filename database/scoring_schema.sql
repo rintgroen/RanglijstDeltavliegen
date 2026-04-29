@@ -128,6 +128,40 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_pilot_identity_aliases (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS rankings_track_collection_profiles (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  display_name VARCHAR(160) NOT NULL,
+  email VARCHAR(190) NOT NULL,
+  email_verified_at DATETIME DEFAULT NULL,
+  livetrack24_username VARCHAR(120) DEFAULT NULL,
+  livetrack24_user_id INT UNSIGNED DEFAULT NULL,
+  livetrack24_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  livetrack24_enabled_at DATETIME DEFAULT NULL,
+  livetrack24_disabled_at DATETIME DEFAULT NULL,
+  last_livetrack24_check_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_rankings_track_collection_profiles_email (email),
+  KEY idx_rankings_track_collection_profiles_lt24 (livetrack24_username),
+  KEY idx_rankings_track_collection_profiles_enabled (livetrack24_enabled, livetrack24_username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS rankings_track_collection_login_tokens (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  profile_id INT UNSIGNED NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_rankings_track_collection_login_tokens_hash (token_hash),
+  KEY idx_rankings_track_collection_login_tokens_profile (profile_id),
+  CONSTRAINT fk_rankings_track_collection_login_tokens_profile
+    FOREIGN KEY (profile_id) REFERENCES rankings_track_collection_profiles(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS rankings_scoring_tasks (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   competition_id INT UNSIGNED NOT NULL,
@@ -198,6 +232,10 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_tracklogs (
   original_filename VARCHAR(255) NOT NULL,
   storage_path VARCHAR(255) NOT NULL,
   file_hash CHAR(64) NOT NULL,
+  source VARCHAR(40) NOT NULL DEFAULT 'manual_upload',
+  source_external_id VARCHAR(190) DEFAULT NULL,
+  source_url VARCHAR(255) DEFAULT NULL,
+  source_fetched_at DATETIME DEFAULT NULL,
   first_fix_at DATETIME NOT NULL,
   last_fix_at DATETIME NOT NULL,
   min_lat DECIMAL(10,7) NOT NULL,
@@ -207,7 +245,8 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_tracklogs (
   fix_count INT UNSIGNED NOT NULL DEFAULT 0,
   uploaded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_rankings_scoring_tracklogs_hash_email (file_hash, pilot_email),
+  UNIQUE KEY uq_rankings_scoring_tracklogs_source (source, source_external_id),
+  KEY idx_rankings_scoring_tracklogs_hash_email (file_hash, pilot_email),
   KEY idx_rankings_scoring_tracklogs_time (first_fix_at, last_fix_at),
   KEY idx_rankings_scoring_tracklogs_email (pilot_email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -218,6 +257,8 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_task_flights (
   tracklog_id INT UNSIGNED NOT NULL,
   pilot_name VARCHAR(160) NOT NULL,
   pilot_email VARCHAR(190) NOT NULL,
+  result_status VARCHAR(30) NOT NULL DEFAULT 'track',
+  identity_reviewed TINYINT(1) NOT NULL DEFAULT 0,
   is_excluded TINYINT(1) NOT NULL DEFAULT 0,
   exclude_reason VARCHAR(255) DEFAULT NULL,
   distance_km DECIMAL(9,3) DEFAULT NULL,
@@ -242,6 +283,7 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_task_flights (
   PRIMARY KEY (id),
   UNIQUE KEY uq_rankings_scoring_task_flights_track (task_id, tracklog_id),
   KEY idx_rankings_scoring_task_flights_task (task_id),
+  KEY idx_rankings_scoring_task_flights_status (task_id, result_status),
   KEY idx_rankings_scoring_task_flights_tracklog (tracklog_id),
   CONSTRAINT fk_rankings_scoring_task_flights_task
     FOREIGN KEY (task_id) REFERENCES rankings_scoring_tasks(id)
@@ -272,6 +314,7 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_task_public_results (
   pilot_name VARCHAR(160) NOT NULL,
   pilot_email VARCHAR(190) DEFAULT NULL,
   pilot_identity_id INT UNSIGNED DEFAULT NULL,
+  result_status VARCHAR(30) NOT NULL DEFAULT 'track',
   distance_km DECIMAL(9,3) DEFAULT NULL,
   start_time_at DATETIME DEFAULT NULL,
   ess_time_at DATETIME DEFAULT NULL,

@@ -344,6 +344,387 @@
     }, 0);
   }
 
+  function setReviewMapMessage(container, message) {
+    if (!container) {
+      return;
+    }
+    if (container._reviewLeafletMap) {
+      var status = container._reviewMapMessage;
+      if (!status || !status.parentNode) {
+        status = document.createElement('span');
+        status.className = 'track-preview-loading review-map-message';
+        container.appendChild(status);
+        container._reviewMapMessage = status;
+      }
+      status.textContent = message || 'Kaart laden...';
+      status.hidden = false;
+      return;
+    }
+    container.innerHTML = '<span class="track-preview-loading">' + escapeHtml(message || 'Kaart laden...') + '</span>';
+  }
+
+  function hideReviewMapMessage(container) {
+    if (container && container._reviewMapMessage) {
+      container._reviewMapMessage.hidden = true;
+    }
+  }
+
+  function clearReviewMap(container, message) {
+    if (!container) {
+      return;
+    }
+    container.removeAttribute('data-loaded-url');
+    container.removeAttribute('data-pending-map');
+    setReviewMapMessage(container, message || 'Kaart laden...');
+  }
+
+  function clearReviewMapLayers(container) {
+    if (!container || !container._reviewLeafletMap || !Array.isArray(container._reviewLeafletLayers)) {
+      return;
+    }
+    container._reviewLeafletLayers.forEach(function (layer) {
+      if (layer && container._reviewLeafletMap.hasLayer(layer)) {
+        container._reviewLeafletMap.removeLayer(layer);
+      }
+    });
+    container._reviewLeafletLayers = [];
+  }
+
+  function isReviewMapVisible(container) {
+    if (!container) {
+      return false;
+    }
+    var rect = container.getBoundingClientRect();
+    return container.getClientRects().length > 0 && rect.width > 0 && rect.height > 0;
+  }
+
+  function renderReviewMap(container, data) {
+    if (!container) {
+      return;
+    }
+    if (!window.L) {
+      setReviewMapMessage(container, 'Reviewkaart niet beschikbaar.');
+      return;
+    }
+
+    var task = data && data.task ? data.task : {};
+    var track = data && data.track ? data.track : {};
+    if (data && data.error) {
+      clearReviewMap(container, data.error);
+      return;
+    }
+    clearReviewMapLayers(container);
+    hideReviewMapMessage(container);
+
+    var map = container._reviewLeafletMap;
+    if (!map) {
+      container.innerHTML = '';
+      map = createStreetMap(container);
+      container._reviewLeafletMap = map;
+    }
+    var layers = [];
+    var boundsPoints = [];
+    function rememberBounds(point) {
+      if (Array.isArray(point) && point.length >= 2 && isFinite(point[0]) && isFinite(point[1])) {
+        boundsPoints.push(point);
+      }
+    }
+    function rememberCircleBounds(center, radiusM) {
+      rememberBounds(center);
+      var radiusKm = Math.max(0, Number(radiusM) || 0) / 1000;
+      if (radiusKm <= 0) {
+        return;
+      }
+      var lat = Number(center[0]);
+      var lon = Number(center[1]);
+      var latDelta = radiusKm / 111.32;
+      var lonDelta = radiusKm / (111.32 * Math.max(0.1, Math.cos(lat * Math.PI / 180)));
+      rememberBounds([lat + latDelta, lon]);
+      rememberBounds([lat - latDelta, lon]);
+      rememberBounds([lat, lon + lonDelta]);
+      rememberBounds([lat, lon - lonDelta]);
+    }
+    var styles = {
+      normal: { color: '#0f6fa8', fillColor: '#0f6fa8', fillOpacity: 0.06, weight: 1, dashArray: '5 5' },
+      sss: { color: '#2f7d32', fillColor: '#2f7d32', fillOpacity: 0.1, weight: 2, dashArray: null },
+      ess: { color: '#b42318', fillColor: '#b42318', fillOpacity: 0.1, weight: 2, dashArray: '8 5' },
+      sss_ess: { color: '#6f42c1', fillColor: '#6f42c1', fillOpacity: 0.1, weight: 2, dashArray: '3 5' }
+    };
+
+    var taskPoints = Array.isArray(task.turnpoints) ? task.turnpoints.map(function (tp) {
+      var lat = Number(tp.lat);
+      var lon = Number(tp.lon);
+      if (!isFinite(lat) || !isFinite(lon)) {
+        return null;
+      }
+      return {
+        center: [lat, lon],
+        radius: Math.max(0, Number(tp.radius_m) || 0),
+        role: tp.role,
+        sequence: tp.sequence || '',
+        name: tp.name || 'Taakpunt'
+      };
+    }).filter(Boolean) : [];
+    taskPoints.forEach(function (tp) {
+      var role = styles[tp.role] ? tp.role : 'normal';
+      var style = styles[role];
+      rememberCircleBounds(tp.center, tp.radius);
+      layers.push(window.L.circle(tp.center, {
+        color: style.color,
+        dashArray: style.dashArray,
+        fillColor: style.fillColor,
+        fillOpacity: style.fillOpacity,
+        radius: tp.radius,
+        weight: style.weight
+      }).addTo(map));
+      layers.push(window.L.circleMarker(tp.center, {
+        color: style.color,
+        fillColor: '#ffffff',
+        fillOpacity: 1,
+        radius: 4,
+        weight: 2
+      }).bindPopup(escapeHtml(tp.sequence + '. ' + tp.name)).addTo(map));
+    });
+
+    var route = Array.isArray(task.route) ? task.route.map(function (point) {
+      return toLatLng(point);
+    }).filter(Boolean) : [];
+    if (route.length > 1) {
+      route.forEach(rememberBounds);
+      layers.push(window.L.polyline(route, {
+        color: '#102436',
+        lineCap: 'round',
+        lineJoin: 'round',
+        opacity: 0.72,
+        weight: 2
+      }).addTo(map));
+    }
+
+    var trackPoints = Array.isArray(track.points) ? track.points.map(function (point) {
+      return toLatLng(point);
+    }).filter(Boolean) : [];
+    if (trackPoints.length > 1) {
+      trackPoints.forEach(rememberBounds);
+      layers.push(window.L.polyline(trackPoints, {
+        color: '#c43131',
+        lineCap: 'round',
+        lineJoin: 'round',
+        opacity: 0.95,
+        weight: 4
+      }).addTo(map));
+    }
+    if (trackPoints.length > 0) {
+      rememberBounds(trackPoints[0]);
+      rememberBounds(trackPoints[trackPoints.length - 1]);
+      layers.push(window.L.circleMarker(trackPoints[0], {
+        color: '#0f6fa8',
+        fillColor: '#ffffff',
+        fillOpacity: 1,
+        radius: 4,
+        weight: 2
+      }).addTo(map));
+      layers.push(window.L.circleMarker(trackPoints[trackPoints.length - 1], {
+        color: '#c43131',
+        fillColor: '#ffffff',
+        fillOpacity: 1,
+        radius: 4,
+        weight: 2
+      }).addTo(map));
+    }
+
+    if (boundsPoints.length > 0) {
+      var bounds = window.L.latLngBounds(boundsPoints);
+      if (bounds && typeof bounds.isValid === 'function' && bounds.isValid()) {
+        map.fitBounds(bounds.pad(0.18), { maxZoom: 14, padding: [14, 14] });
+      }
+    }
+    container._reviewLeafletLayers = layers;
+    window.setTimeout(function () {
+      if (container._reviewLeafletMap === map) {
+        map.invalidateSize();
+      }
+    }, 0);
+  }
+
+  function setupReviewWorkspace(workspace) {
+    var buttons = Array.prototype.slice.call(workspace.querySelectorAll('[data-review-target]'));
+    var panels = Array.prototype.slice.call(workspace.querySelectorAll('[data-review-panel]'));
+    var mapCache = {};
+    if (buttons.length === 0 || panels.length === 0) {
+      return;
+    }
+
+    function selectedAction(panel) {
+      var checked = panel.querySelector('[data-review-action]:checked');
+      return checked ? checked.value : 'exclude';
+    }
+
+    function updateButtonState(panel, action) {
+      var panelId = panel.getAttribute('data-review-panel');
+      var reviewed = !!panel.querySelector('[data-review-identity-reviewed]:checked');
+      buttons.forEach(function (button) {
+        if (button.getAttribute('data-review-target') !== panelId) {
+          return;
+        }
+        var excluded = action === 'exclude';
+        button.classList.toggle('is-review-excluded', excluded);
+        button.classList.toggle('is-review-ready', !excluded && reviewed);
+        button.classList.toggle('is-review-pending', !excluded && !reviewed);
+      });
+    }
+
+    function loadSelectedTrackMap(panel) {
+      var select = panel.querySelector('[data-review-track-select]');
+      var mapEl = panel.querySelector('[data-review-map]');
+      if (!select || !mapEl || select.selectedIndex < 0) {
+        clearReviewMap(mapEl, 'Geen track geselecteerd.');
+        return;
+      }
+      var option = select.options[select.selectedIndex];
+      var url = option ? option.getAttribute('data-map-url') : '';
+      if (!url) {
+        clearReviewMap(mapEl, 'Geen kaartdata voor deze track.');
+        return;
+      }
+      if (!isReviewMapVisible(mapEl)) {
+        clearReviewMap(mapEl, 'Kaart wordt geladen zodra dit paneel zichtbaar is.');
+        mapEl.setAttribute('data-pending-map', '1');
+        return;
+      }
+      if (mapEl.getAttribute('data-loaded-url') === url && mapEl._reviewLeafletMap) {
+        hideReviewMapMessage(mapEl);
+        mapEl._reviewLeafletMap.invalidateSize();
+        return;
+      }
+      var requestId = (mapEl._reviewMapRequestId || 0) + 1;
+      mapEl._reviewMapRequestId = requestId;
+      clearReviewMap(mapEl, 'Kaart laden...');
+      if (mapCache[url]) {
+        renderReviewMap(mapEl, mapCache[url]);
+        mapEl.setAttribute('data-loaded-url', url);
+        return;
+      }
+      fetch(url, { headers: { Accept: 'application/json' } })
+        .then(function (response) {
+          return response.text().then(function (text) {
+            var data = null;
+            if (text) {
+              try {
+                data = JSON.parse(text);
+              } catch (error) {
+                data = null;
+              }
+            }
+            if (!response.ok) {
+              throw new Error(data && data.error ? data.error : 'Kaart laden mislukt (HTTP ' + response.status + ').');
+            }
+            if (!data || data.error) {
+              throw new Error(data && data.error ? data.error : 'Geen kaartdata ontvangen.');
+            }
+            return data;
+          });
+        })
+        .then(function (data) {
+          if (mapEl._reviewMapRequestId !== requestId) {
+            return;
+          }
+          if (!isReviewMapVisible(mapEl)) {
+            mapCache[url] = data;
+            clearReviewMap(mapEl, 'Kaart wordt geladen zodra dit paneel zichtbaar is.');
+            mapEl.setAttribute('data-pending-map', '1');
+            return;
+          }
+          mapCache[url] = data;
+          renderReviewMap(mapEl, data);
+          mapEl.setAttribute('data-loaded-url', url);
+        })
+        .catch(function (error) {
+          if (mapEl._reviewMapRequestId !== requestId) {
+            return;
+          }
+          clearReviewMap(mapEl, error && error.message ? error.message : 'Kaart laden mislukt.');
+        });
+    }
+
+    function updatePanel(panel, allowMap) {
+      var action = selectedAction(panel);
+      var trackControls = panel.querySelector('[data-review-track-controls]');
+      var mapShell = panel.querySelector('[data-review-map-shell]');
+      var mapEl = panel.querySelector('[data-review-map]');
+      var useTrack = action === 'track';
+      updateButtonState(panel, action);
+      if (trackControls) {
+        trackControls.hidden = !useTrack;
+      }
+      if (mapShell) {
+        mapShell.hidden = !useTrack;
+      }
+      if (useTrack && allowMap) {
+        loadSelectedTrackMap(panel);
+      } else if (useTrack) {
+        clearReviewMap(mapEl, 'Kaart laden...');
+      }
+    }
+
+    function activatePanel(targetId) {
+      panels.forEach(function (panel) {
+        var isActive = panel.getAttribute('data-review-panel') === targetId;
+        panel.hidden = !isActive;
+        if (isActive) {
+          updatePanel(panel, true);
+        }
+      });
+      buttons.forEach(function (button) {
+        var isActive = button.getAttribute('data-review-target') === targetId;
+        button.classList.toggle('is-active', isActive);
+        button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      });
+    }
+
+    function refreshActivePanel() {
+      var activePanel = panels.find(function (panel) {
+        return !panel.hidden;
+      });
+      if (activePanel) {
+        updatePanel(activePanel, true);
+      }
+    }
+
+    buttons.forEach(function (button) {
+      button.addEventListener('click', function () {
+        activatePanel(button.getAttribute('data-review-target'));
+      });
+    });
+    panels.forEach(function (panel) {
+      panel.querySelectorAll('[data-review-action]').forEach(function (input) {
+        input.addEventListener('change', function () {
+          updatePanel(panel, !panel.hidden);
+        });
+      });
+      panel.querySelectorAll('[data-review-identity-reviewed]').forEach(function (input) {
+        input.addEventListener('change', function () {
+          updatePanel(panel, !panel.hidden);
+        });
+      });
+      var select = panel.querySelector('[data-review-track-select]');
+      if (select) {
+        select.addEventListener('change', function () {
+          if (!panel.hidden && selectedAction(panel) === 'track') {
+            loadSelectedTrackMap(panel);
+          }
+        });
+      }
+      updatePanel(panel, false);
+    });
+    var activeButton = buttons.find(function (button) {
+      return button.classList.contains('is-active');
+    }) || buttons[0];
+    activatePanel(activeButton.getAttribute('data-review-target'));
+    window.addEventListener('resize', function () {
+      window.setTimeout(refreshActivePanel, 0);
+    });
+  }
+
   function setupTabs(tabset) {
     var buttons = Array.prototype.slice.call(tabset.querySelectorAll('[data-tab-target]'));
     var panels = Array.prototype.slice.call(tabset.querySelectorAll('[data-tab-panel]'));
@@ -472,5 +853,6 @@
     document.querySelectorAll('[data-tabs]').forEach(setupTabs);
     document.querySelectorAll('.track-preview').forEach(setupTrackPreviewMap);
     document.querySelectorAll('.task-map').forEach(setupTaskMap);
+    document.querySelectorAll('[data-review-workspace]').forEach(setupReviewWorkspace);
   });
 })();

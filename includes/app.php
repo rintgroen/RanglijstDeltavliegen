@@ -152,6 +152,7 @@ function app_public_nav(string $active = ''): void {
     app_public_nav_cluster('Wedstrijden', [
         'scoring' => ['Scores', 'scoring.php'],
         'track_upload' => ['Track upload', 'track_upload.php'],
+        'track_profile' => ['Trackprofiel', 'track_profile.php'],
     ], $active, 'public-nav-competitions', 'nav-cluster-wedstrijden');
     echo '</nav>';
 }
