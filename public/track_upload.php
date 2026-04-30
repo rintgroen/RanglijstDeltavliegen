@@ -5,6 +5,19 @@ require_once __DIR__ . '/../includes/scoring.php';
 app_enable_debug();
 $pdo = app_db_or_fail();
 $csrf = app_csrf_token();
+$taskId = isset($_POST['task_id']) ? (int)$_POST['task_id'] : (isset($_GET['task_id']) ? (int)$_GET['task_id'] : 0);
+$task = $taskId > 0 ? scoring_load_task($pdo, $taskId) : null;
+$competition = null;
+if ($taskId > 0 && !$task) {
+    http_response_code(404);
+    app_page_start(app_site_name() . ' - Taak niet gevonden', ['active_public' => 'track_upload']);
+    echo '<main class="card"><h1>Taak niet gevonden</h1><p class="muted">Deze taak kon niet worden gevonden.</p></main>';
+    app_page_end();
+    exit;
+}
+if ($task) {
+    $competition = scoring_load_competition($pdo, (int)$task['competition_id']);
+}
 $notice = null;
 $error = null;
 $trackPreview = null;
@@ -27,8 +40,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('Upload een IGC-bestand.');
         }
         $tracklogId = scoring_store_tracklog_upload($pdo, $_FILES['tracklog'], $pilotName, $pilotEmail);
+        if ($task) {
+            scoring_link_tracklog_to_task($pdo, $task, $tracklogId, $pilotName, $pilotEmail);
+        }
         $trackPreview = scoring_tracklog_map_preview($pdo, $tracklogId);
-        $notice = 'Dank je, je tracklog is ontvangen. De scorer kan hem nu meenemen in de juiste taak.';
+        $validationStmt = $pdo->prepare('SELECT validation_status, validation_response FROM rankings_scoring_tracklogs WHERE id = ? LIMIT 1');
+        $validationStmt->execute([$tracklogId]);
+        $validationTracklog = $validationStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        $validationStatus = strtolower(trim((string)($validationTracklog['validation_status'] ?? 'not_checked')));
+        $validationNote = '';
+        if ($validationStatus === 'passed') {
+            $validationNote = ' FAI-validatie: geldig.';
+        } elseif ($validationStatus === 'failed') {
+            $validationNote = ' FAI-validatie: niet geldig; je upload blijft beschikbaar als LOG.';
+        } elseif ($validationStatus === 'error') {
+            $validationNote = ' FAI-validatie kon niet worden afgerond; je upload blijft beschikbaar als LOG.';
+        }
+        $notice = $task
+            ? 'Dank je, je tracklog is ontvangen en gekoppeld aan deze taak.' . $validationNote
+            : 'Dank je, je tracklog is ontvangen. De scorer kan hem nu meenemen in de juiste taak.' . $validationNote;
     } catch (Throwable $e) {
         $error = app_debug_enabled() ? $e->getMessage() : $e->getMessage();
     }
@@ -60,7 +90,11 @@ app_page_start(app_site_name() . ' - Track upload', [
   <section class="card narrow-card">
     <div class="kicker">Competitie scoring</div>
     <h1>Track upload</h1>
-    <p class="muted">Upload je IGC-tracklog. Je naam en e-mail worden gebruikt om je over meerdere taken in dezelfde competitie te herkennen.</p>
+    <?php if ($task): ?>
+      <p class="muted"><?= h($competition['name'] ?? $task['competition_name']) ?> - <?= h($task['name']) ?>. Upload je IGC-tracklog voor deze taak.</p>
+    <?php else: ?>
+      <p class="muted">Upload je IGC-tracklog. Je naam en e-mail worden gebruikt om je over meerdere taken in dezelfde competitie te herkennen.</p>
+    <?php endif; ?>
     <?php if ($notice): ?><div class="alert success"><?= h($notice) ?></div><?php endif; ?>
     <?php if ($trackPreview): ?>
       <div class="track-preview">
@@ -77,6 +111,7 @@ app_page_start(app_site_name() . ' - Track upload', [
     <?php if ($error): ?><div class="alert error"><?= h($error) ?></div><?php endif; ?>
     <form method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+      <input type="hidden" name="task_id" value="<?= (int)$taskId ?>">
       <label>Naam
         <input type="text" name="pilot_name" required maxlength="160" autocomplete="name">
       </label>

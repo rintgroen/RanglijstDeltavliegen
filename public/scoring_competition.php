@@ -98,8 +98,14 @@ app_page_start(app_site_name() . ' - ' . $competitionName . ' tussenstand', [
               <tr>
                 <td><?= (int)$row['rank_no'] ?></td>
                 <td><?= h($row['pilot_name']) ?></td>
-                <?php foreach ($row['task_points'] as $points): ?>
-                  <td><?= h(app_format_compact_number($points, 1)) ?></td>
+                <?php foreach ($row['task_points'] as $taskIndex => $points): ?>
+                  <?php $evidenceCode = scoring_normalize_evidence_code($row['task_evidence'][$taskIndex] ?? ''); ?>
+                  <td>
+                    <?= h(app_format_compact_number($points, 1)) ?>
+                    <?php if (!empty($row['task_evidence'][$taskIndex])): ?>
+                      <span class="evidence-badge evidence-<?= h(strtolower($evidenceCode)) ?>" title="<?= h(scoring_evidence_label($evidenceCode)) ?>"><?= h($evidenceCode) ?></span>
+                    <?php endif; ?>
+                  </td>
                 <?php endforeach; ?>
                 <td><strong><?= h(app_format_compact_number($row['total_points'], 1)) ?></strong></td>
               </tr>
@@ -107,6 +113,7 @@ app_page_start(app_site_name() . ' - ' . $competitionName . ' tussenstand', [
           </tbody>
         </table>
       </div>
+      <p class="muted evidence-legend"><?= h(scoring_evidence_legend_text()) ?></p>
     <?php endif; ?>
   </section>
 </main>

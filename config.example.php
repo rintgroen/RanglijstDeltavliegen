@@ -26,6 +26,9 @@ const SCORING_MAGIC_LINK_TTL_MINUTES = 30;
 const SCORING_UPLOAD_MAX_MB = 12;
 const SCORING_FLYMASTER_GROUP_ID = 1;
 const SCORING_FLYMASTER_PUBLIC_SCOUT = false;
+const SCORING_FAI_VALIDATION_ENABLED = true;
+const SCORING_FAI_VALIDATION_URL = 'http://vali.fai-civl.org/api/vali/json';
+const SCORING_FAI_VALIDATION_TIMEOUT_SECONDS = 20;
 
 // Postmark is used for scorer login and welcome emails when a server token is set.
 // Find this under your Postmark Server > API Tokens.

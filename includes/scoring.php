@@ -63,6 +63,27 @@ function scoring_utc_sql_to_display(?string $value): string {
     return $dt->setTimezone(scoring_timezone())->format('Y-m-d H:i');
 }
 
+function scoring_sql_add_minutes(?string $value, int $minutes): ?string {
+    if (!$value) {
+        return null;
+    }
+    $dt = new DateTimeImmutable($value, scoring_utc_timezone());
+    return $dt->modify(($minutes >= 0 ? '+' : '') . $minutes . ' minutes')->format('Y-m-d H:i:s');
+}
+
+function scoring_task_deadline_at(array $task): ?string {
+    $deadline = trim((string)($task['task_deadline_at'] ?? ''));
+    return $deadline !== '' ? $deadline : ($task['window_close_at'] ?? null);
+}
+
+function scoring_task_reporting_deadline_at(array $task): ?string {
+    $deadline = trim((string)($task['reporting_deadline_at'] ?? ''));
+    if ($deadline !== '') {
+        return $deadline;
+    }
+    return scoring_sql_add_minutes(scoring_task_deadline_at($task), 30);
+}
+
 function scoring_gate_local_to_utc_sql(string $taskDate, string $time): string {
     $dt = new DateTimeImmutable($taskDate . ' ' . trim($time), scoring_timezone());
     return $dt->setTimezone(scoring_utc_timezone())->format('Y-m-d H:i:s');
@@ -660,6 +681,22 @@ function scoring_exec_schema_change(PDO $pdo, string $sql, array $ignoreMysqlCod
     }
 }
 
+function scoring_ensure_tracklog_evidence_columns(PDO $pdo): void {
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tracklogs', 'validation_status')) {
+        $afterColumn = scoring_table_column_exists($pdo, 'rankings_scoring_tracklogs', 'source_fetched_at') ? 'source_fetched_at' : 'file_hash';
+        scoring_exec_schema_change($pdo, "ALTER TABLE rankings_scoring_tracklogs ADD COLUMN validation_status VARCHAR(30) NOT NULL DEFAULT 'not_checked' AFTER " . $afterColumn, [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tracklogs', 'validation_checked_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tracklogs ADD COLUMN validation_checked_at DATETIME DEFAULT NULL AFTER validation_status', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tracklogs', 'validation_service')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tracklogs ADD COLUMN validation_service VARCHAR(80) DEFAULT NULL AFTER validation_checked_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tracklogs', 'validation_response')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tracklogs ADD COLUMN validation_response MEDIUMTEXT DEFAULT NULL AFTER validation_service', [1060], ['42S21']);
+    }
+}
+
 function scoring_ensure_track_collection_tables(PDO $pdo): void {
     $pdo->exec(
         'CREATE TABLE IF NOT EXISTS rankings_track_collection_profiles (
@@ -727,6 +764,7 @@ function scoring_ensure_track_collection_tables(PDO $pdo): void {
     if (!scoring_table_index_exists($pdo, 'rankings_scoring_tracklogs', 'idx_rankings_scoring_tracklogs_hash_email')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tracklogs ADD KEY idx_rankings_scoring_tracklogs_hash_email (file_hash, pilot_email)', [1061], ['42000']);
     }
+    scoring_ensure_tracklog_evidence_columns($pdo);
 
     if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'flymaster_serial')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN flymaster_serial VARCHAR(20) DEFAULT NULL AFTER last_livetrack24_check_at', [1060], ['42S21']);
@@ -772,6 +810,9 @@ function scoring_ensure_task_review_columns(PDO $pdo): void {
     if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'result_status')) {
         scoring_exec_schema_change($pdo, "ALTER TABLE rankings_scoring_task_flights ADD COLUMN result_status VARCHAR(30) NOT NULL DEFAULT 'track' AFTER pilot_email", [1060], ['42S21']);
     }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'evidence_code')) {
+        scoring_exec_schema_change($pdo, "ALTER TABLE rankings_scoring_task_flights ADD COLUMN evidence_code VARCHAR(10) NOT NULL DEFAULT 'LOG' AFTER result_status", [1060], ['42S21']);
+    }
     if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'identity_reviewed')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_flights ADD COLUMN identity_reviewed TINYINT(1) NOT NULL DEFAULT 0 AFTER result_status', [1060], ['42S21']);
     }
@@ -784,9 +825,34 @@ function scoring_ensure_task_active_column(PDO $pdo): void {
     if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'active')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1 AFTER task_type', [1060], ['42S21']);
     }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'task_deadline_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN task_deadline_at DATETIME DEFAULT NULL AFTER window_close_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'reporting_deadline_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN reporting_deadline_at DATETIME DEFAULT NULL AFTER task_deadline_at', [1060], ['42S21']);
+    }
     if (!scoring_table_index_exists($pdo, 'rankings_scoring_tasks', 'idx_rankings_scoring_tasks_competition_active')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD KEY idx_rankings_scoring_tasks_competition_active (competition_id, active)', [1061], ['42000']);
     }
+}
+
+function scoring_ensure_landing_report_table(PDO $pdo): void {
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS rankings_scoring_task_landing_reports (
+          id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+          task_id INT UNSIGNED NOT NULL,
+          pilot_name VARCHAR(160) NOT NULL,
+          conditions VARCHAR(30) DEFAULT NULL,
+          needs_retrieval TINYINT(1) NOT NULL DEFAULT 0,
+          safe_reported_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          KEY idx_rankings_scoring_task_landing_reports_task (task_id, safe_reported_at),
+          CONSTRAINT fk_rankings_scoring_task_landing_reports_task
+            FOREIGN KEY (task_id) REFERENCES rankings_scoring_tasks(id)
+            ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
 }
 
 function scoring_task_review_status_available(PDO $pdo): bool {
@@ -988,6 +1054,406 @@ function scoring_http_get(string $url, int $timeoutSeconds = 15, string $accept 
         throw new RuntimeException('Externe URL gaf HTTP ' . $status . '.');
     }
     return $body;
+}
+
+function scoring_http_post_multipart_file(
+    string $url,
+    string $fieldName,
+    string $filePath,
+    string $filename,
+    int $timeoutSeconds = 20,
+    string $accept = 'application/json'
+): array {
+    $userAgent = 'Mozilla/5.0 (compatible; RanglijstDeltavliegen/1.0; +https://www.ranglijstdeltavliegen.nl)';
+    if (function_exists('curl_init') && class_exists('CURLFile')) {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            throw new RuntimeException('Kon externe validatie niet voorbereiden.');
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => [
+                $fieldName => new CURLFile($filePath, 'text/plain', $filename),
+            ],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 4,
+            CURLOPT_CONNECTTIMEOUT => min(10, $timeoutSeconds),
+            CURLOPT_TIMEOUT => $timeoutSeconds,
+            CURLOPT_USERAGENT => $userAgent,
+            CURLOPT_HTTPHEADER => ['Accept: ' . $accept],
+        ]);
+        $body = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $error = (string)curl_error($ch);
+        if (PHP_VERSION_ID < 80500) {
+            curl_close($ch);
+        }
+        if ($body === false) {
+            throw new RuntimeException('Kon externe validatie niet uitvoeren' . ($error !== '' ? ': ' . $error : '') . '.');
+        }
+        return [
+            'status' => $status,
+            'body' => (string)$body,
+        ];
+    }
+
+    $fileBody = @file_get_contents($filePath);
+    if ($fileBody === false) {
+        throw new RuntimeException('Kon IGC-bestand niet lezen voor validatie.');
+    }
+    try {
+        $boundarySuffix = bin2hex(random_bytes(12));
+    } catch (Throwable $e) {
+        $boundarySuffix = md5(uniqid('', true));
+    }
+    $boundary = '----RanglijstDeltavliegen' . $boundarySuffix;
+    $safeFilename = addcslashes($filename, "\"\\");
+    $requestBody = ''
+        . '--' . $boundary . "\r\n"
+        . 'Content-Disposition: form-data; name="' . addcslashes($fieldName, "\"\\") . '"; filename="' . $safeFilename . '"' . "\r\n"
+        . "Content-Type: text/plain\r\n\r\n"
+        . $fileBody . "\r\n"
+        . '--' . $boundary . "--\r\n";
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => implode("\r\n", [
+                'User-Agent: ' . $userAgent,
+                'Accept: ' . $accept,
+                'Content-Type: multipart/form-data; boundary=' . $boundary,
+                'Content-Length: ' . strlen($requestBody),
+            ]) . "\r\n",
+            'content' => $requestBody,
+            'ignore_errors' => true,
+            'timeout' => $timeoutSeconds,
+        ],
+    ]);
+    $body = @file_get_contents($url, false, $context);
+    $status = 0;
+    if (function_exists('http_get_last_response_headers')) {
+        $responseHeaders = http_get_last_response_headers();
+        $responseHeaders = is_array($responseHeaders) ? $responseHeaders : [];
+    } else {
+        $definedVars = get_defined_vars();
+        $responseHeaders = isset($definedVars['http_response_header']) && is_array($definedVars['http_response_header'])
+            ? $definedVars['http_response_header']
+            : [];
+    }
+    foreach ($responseHeaders as $header) {
+        if (preg_match('/^HTTP\/\S+\s+(\d+)/', (string)$header, $m)) {
+            $status = (int)$m[1];
+            break;
+        }
+    }
+    if ($body === false) {
+        throw new RuntimeException('Kon externe validatie niet uitvoeren.');
+    }
+    return [
+        'status' => $status,
+        'body' => $body,
+    ];
+}
+
+function scoring_fai_validation_enabled(): bool {
+    if (!defined('SCORING_FAI_VALIDATION_ENABLED')) {
+        return true;
+    }
+    return (bool)SCORING_FAI_VALIDATION_ENABLED;
+}
+
+function scoring_fai_validation_url(): string {
+    $url = defined('SCORING_FAI_VALIDATION_URL') ? trim((string)SCORING_FAI_VALIDATION_URL) : '';
+    return $url !== '' ? $url : 'http://vali.fai-civl.org/api/vali/json';
+}
+
+function scoring_fai_validation_timeout_seconds(): int {
+    $seconds = defined('SCORING_FAI_VALIDATION_TIMEOUT_SECONDS') ? (int)SCORING_FAI_VALIDATION_TIMEOUT_SECONDS : 20;
+    return max(3, min(60, $seconds));
+}
+
+function scoring_fai_validation_service_name(): string {
+    return 'CIVL/FAI Vali';
+}
+
+function scoring_fai_validation_response_for_storage(array $metadata): string {
+    if (isset($metadata['response']) && is_array($metadata['response']) && array_key_exists('igc', $metadata['response'])) {
+        unset($metadata['response']['igc']);
+        $metadata['response']['igc_omitted'] = true;
+    }
+    if (isset($metadata['raw_body'])) {
+        $metadata['raw_body'] = substr((string)$metadata['raw_body'], 0, 12000);
+    }
+    $json = json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    return $json !== false ? $json : '{}';
+}
+
+function scoring_fai_validation_status_from_response(?array $response): string {
+    if (!$response) {
+        return 'error';
+    }
+    $result = strtoupper(trim((string)($response['result'] ?? '')));
+    if ($result === 'PASSED') {
+        return 'passed';
+    }
+    if (in_array($result, ['FAILED', 'FAIL', 'INVALID'], true)) {
+        return 'failed';
+    }
+    return 'error';
+}
+
+function scoring_validate_igc_with_fai(string $filePath, ?string $filename = null): array {
+    $checkedAt = scoring_now_utc();
+    $service = scoring_fai_validation_service_name();
+    if (!scoring_fai_validation_enabled()) {
+        return [
+            'validation_status' => 'not_checked',
+            'validation_checked_at' => null,
+            'validation_service' => null,
+            'validation_response' => scoring_fai_validation_response_for_storage([
+                'skipped' => 'FAI validation is disabled.',
+            ]),
+        ];
+    }
+    if ($filePath === '' || !is_file($filePath)) {
+        return [
+            'validation_status' => 'error',
+            'validation_checked_at' => $checkedAt,
+            'validation_service' => $service,
+            'validation_response' => scoring_fai_validation_response_for_storage([
+                'error' => 'IGC file is not available for validation.',
+            ]),
+        ];
+    }
+
+    $filename = trim((string)$filename);
+    if ($filename === '') {
+        $filename = basename($filePath) ?: 'tracklog.igc';
+    }
+
+    try {
+        $url = scoring_fai_validation_url();
+        $http = scoring_http_post_multipart_file(
+            $url,
+            'igcfile',
+            $filePath,
+            $filename,
+            scoring_fai_validation_timeout_seconds(),
+            'application/json'
+        );
+        $httpStatus = (int)($http['status'] ?? 0);
+        $body = (string)($http['body'] ?? '');
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) {
+            return [
+                'validation_status' => 'error',
+                'validation_checked_at' => $checkedAt,
+                'validation_service' => $service,
+                'validation_response' => scoring_fai_validation_response_for_storage([
+                    'endpoint' => $url,
+                    'http_status' => $httpStatus,
+                    'error' => 'Validator did not return JSON.',
+                    'raw_body' => $body,
+                ]),
+            ];
+        }
+        if ($httpStatus < 200 || $httpStatus >= 300) {
+            return [
+                'validation_status' => 'error',
+                'validation_checked_at' => $checkedAt,
+                'validation_service' => $service,
+                'validation_response' => scoring_fai_validation_response_for_storage([
+                    'endpoint' => $url,
+                    'http_status' => $httpStatus,
+                    'response' => $decoded,
+                ]),
+            ];
+        }
+        return [
+            'validation_status' => scoring_fai_validation_status_from_response($decoded),
+            'validation_checked_at' => $checkedAt,
+            'validation_service' => $service,
+            'validation_response' => scoring_fai_validation_response_for_storage([
+                'endpoint' => $url,
+                'http_status' => $httpStatus,
+                'response' => $decoded,
+            ]),
+        ];
+    } catch (Throwable $e) {
+        return [
+            'validation_status' => 'error',
+            'validation_checked_at' => $checkedAt,
+            'validation_service' => $service,
+            'validation_response' => scoring_fai_validation_response_for_storage([
+                'endpoint' => scoring_fai_validation_url(),
+                'error' => $e->getMessage(),
+            ]),
+        ];
+    }
+}
+
+function scoring_update_tracklog_validation(PDO $pdo, int $tracklogId, array $validation): void {
+    if ($tracklogId <= 0) {
+        return;
+    }
+    scoring_ensure_tracklog_evidence_columns($pdo);
+    $status = strtolower(trim((string)($validation['validation_status'] ?? 'error')));
+    if (!in_array($status, ['not_checked', 'passed', 'failed', 'error', 'skipped'], true)) {
+        $status = 'error';
+    }
+    $checkedAt = $validation['validation_checked_at'] ?? scoring_now_utc();
+    if ($checkedAt !== null) {
+        $checkedAt = trim((string)$checkedAt);
+        if ($checkedAt === '') {
+            $checkedAt = null;
+        }
+    }
+    $service = isset($validation['validation_service']) ? trim((string)$validation['validation_service']) : null;
+    if ($service === '') {
+        $service = null;
+    }
+    $response = isset($validation['validation_response']) ? (string)$validation['validation_response'] : '{}';
+
+    $stmt = $pdo->prepare(
+        'UPDATE rankings_scoring_tracklogs
+         SET validation_status = ?,
+             validation_checked_at = ?,
+             validation_service = ?,
+             validation_response = ?
+         WHERE id = ?'
+    );
+    $stmt->execute([$status, $checkedAt, $service, $response, $tracklogId]);
+}
+
+function scoring_tracklog_file_path_for_validation(array $tracklog): ?string {
+    $storagePath = trim((string)($tracklog['storage_path'] ?? ''));
+    if ($storagePath === '') {
+        return null;
+    }
+    $path = scoring_public_upload_path($storagePath);
+    $realPath = realpath($path);
+    $uploadRoot = realpath(scoring_upload_root());
+    if (!$realPath || !$uploadRoot || strpos($realPath, $uploadRoot . DIRECTORY_SEPARATOR) !== 0 || !is_file($realPath)) {
+        return null;
+    }
+    return $realPath;
+}
+
+function scoring_validate_tracklog_by_id(PDO $pdo, int $tracklogId, bool $force = true): array {
+    if ($tracklogId <= 0) {
+        throw new RuntimeException('Tracklog niet gevonden.');
+    }
+    scoring_ensure_tracklog_evidence_columns($pdo);
+    $sourceSelect = scoring_tracklog_source_columns_available($pdo) ? 'source' : "'manual_upload' AS source";
+    $stmt = $pdo->prepare(
+        'SELECT id, original_filename, storage_path, ' . $sourceSelect . ', validation_status
+         FROM rankings_scoring_tracklogs
+         WHERE id = ?
+         LIMIT 1'
+    );
+    $stmt->execute([$tracklogId]);
+    $tracklog = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$tracklog) {
+        throw new RuntimeException('Tracklog niet gevonden.');
+    }
+
+    $source = strtolower(trim((string)($tracklog['source'] ?? 'manual_upload')));
+    if (in_array($source, ['flymaster_replay', 'livetrack24'], true)) {
+        $validation = [
+            'validation_status' => 'skipped',
+            'validation_checked_at' => scoring_now_utc(),
+            'validation_service' => scoring_fai_validation_service_name(),
+            'validation_response' => scoring_fai_validation_response_for_storage([
+                'skipped' => 'Live-tracking reconstructions are not original IGC files.',
+            ]),
+        ];
+        scoring_update_tracklog_validation($pdo, $tracklogId, $validation);
+        return $validation;
+    }
+
+    $currentStatus = strtolower(trim((string)($tracklog['validation_status'] ?? 'not_checked')));
+    if (!$force && $currentStatus === 'passed') {
+        return [
+            'validation_status' => 'passed',
+            'validation_checked_at' => null,
+            'validation_service' => scoring_fai_validation_service_name(),
+            'validation_response' => scoring_fai_validation_response_for_storage([
+                'skipped' => 'Tracklog was already validated.',
+            ]),
+        ];
+    }
+
+    $path = scoring_tracklog_file_path_for_validation($tracklog);
+    if ($path === null) {
+        $validation = [
+            'validation_status' => 'error',
+            'validation_checked_at' => scoring_now_utc(),
+            'validation_service' => scoring_fai_validation_service_name(),
+            'validation_response' => scoring_fai_validation_response_for_storage([
+                'error' => 'IGC file is missing or outside the upload directory.',
+            ]),
+        ];
+        scoring_update_tracklog_validation($pdo, $tracklogId, $validation);
+        return $validation;
+    }
+
+    $validation = scoring_validate_igc_with_fai($path, (string)($tracklog['original_filename'] ?? 'tracklog.igc'));
+    scoring_update_tracklog_validation($pdo, $tracklogId, $validation);
+    return $validation;
+}
+
+function scoring_validate_tracklog_after_upload(PDO $pdo, int $tracklogId, string $sourceName): void {
+    if ($tracklogId <= 0 || strtolower(trim($sourceName)) !== 'manual_upload' || !scoring_fai_validation_enabled()) {
+        return;
+    }
+    try {
+        scoring_validate_tracklog_by_id($pdo, $tracklogId, true);
+    } catch (Throwable $e) {
+        scoring_update_tracklog_validation($pdo, $tracklogId, [
+            'validation_status' => 'error',
+            'validation_checked_at' => scoring_now_utc(),
+            'validation_service' => scoring_fai_validation_service_name(),
+            'validation_response' => scoring_fai_validation_response_for_storage([
+                'error' => $e->getMessage(),
+            ]),
+        ]);
+    }
+}
+
+function scoring_tracklog_validation_status_label(?string $status): string {
+    $status = strtolower(trim((string)$status));
+    $labels = [
+        'not_checked' => 'Niet gecontroleerd',
+        'passed' => 'FAI geldig',
+        'failed' => 'Ongeldig',
+        'error' => 'Validatie niet gelukt',
+        'skipped' => 'Overgeslagen',
+    ];
+    return $labels[$status] ?? $labels['not_checked'];
+}
+
+function scoring_tracklog_validation_message(array $tracklog): string {
+    $response = trim((string)($tracklog['validation_response'] ?? ''));
+    if ($response === '') {
+        return '';
+    }
+    $decoded = json_decode($response, true);
+    if (!is_array($decoded)) {
+        return '';
+    }
+    $serverResponse = isset($decoded['response']) && is_array($decoded['response']) ? $decoded['response'] : $decoded;
+    foreach (['msg', 'status', 'result', 'error', 'skipped'] as $key) {
+        if (isset($serverResponse[$key]) && trim((string)$serverResponse[$key]) !== '') {
+            return trim((string)$serverResponse[$key]);
+        }
+    }
+    if (isset($decoded['error']) && trim((string)$decoded['error']) !== '') {
+        return trim((string)$decoded['error']);
+    }
+    if (isset($decoded['skipped']) && trim((string)$decoded['skipped']) !== '') {
+        return trim((string)$decoded['skipped']);
+    }
+    return '';
 }
 
 function scoring_find_tracklog_by_source(PDO $pdo, string $source, string $externalId): ?array {
@@ -2139,6 +2605,10 @@ function scoring_insert_tracklog_record(
     if ($sourceName === '') {
         $sourceName = 'manual_upload';
     }
+    $returnTracklogId = function (int $tracklogId) use ($pdo, $sourceName): int {
+        scoring_validate_tracklog_after_upload($pdo, $tracklogId, $sourceName);
+        return $tracklogId;
+    };
     $sourceExternalId = isset($source['external_id']) && trim((string)$source['external_id']) !== ''
         ? trim((string)$source['external_id'])
         : null;
@@ -2222,7 +2692,7 @@ function scoring_insert_tracklog_record(
 
     $tracklogId = (int)$pdo->lastInsertId();
     if ($tracklogId > 0) {
-        return $tracklogId;
+        return $returnTracklogId($tracklogId);
     }
 
     if ($hasSourceColumns && $sourceExternalId !== null) {
@@ -2234,7 +2704,7 @@ function scoring_insert_tracklog_record(
         $lookup->execute([$sourceName, $sourceExternalId]);
         $tracklogId = (int)$lookup->fetchColumn();
         if ($tracklogId > 0) {
-            return $tracklogId;
+            return $returnTracklogId($tracklogId);
         }
     }
 
@@ -2244,7 +2714,7 @@ function scoring_insert_tracklog_record(
     if ($tracklogId <= 0) {
         throw new RuntimeException('Tracklog is opgeslagen, maar kon niet worden teruggevonden.');
     }
-    return $tracklogId;
+    return $returnTracklogId($tracklogId);
 }
 
 function scoring_store_tracklog_file(
@@ -2398,6 +2868,54 @@ function scoring_task_flight_status_label(string $status): string {
     return $labels[scoring_normalize_task_flight_result_status($status)] ?? 'Tracklog';
 }
 
+function scoring_normalize_evidence_code(?string $code): string {
+    $code = strtoupper(trim((string)$code));
+    return in_array($code, ['N', 'LT', 'LOG', 'FAI'], true) ? $code : 'LOG';
+}
+
+function scoring_tracklog_evidence_code(array $flight): string {
+    $status = scoring_task_flight_result_status($flight);
+    if ($status !== 'track' || trim((string)($flight['storage_path'] ?? '')) === '') {
+        return 'N';
+    }
+
+    $source = strtolower(trim((string)($flight['source'] ?? 'manual_upload')));
+    if (in_array($source, ['flymaster_replay', 'livetrack24'], true)) {
+        return 'LT';
+    }
+
+    $validationStatus = strtolower(trim((string)($flight['validation_status'] ?? 'not_checked')));
+    if (in_array($validationStatus, ['passed', 'valid', 'validated', 'fai_passed'], true)) {
+        return 'FAI';
+    }
+
+    return 'LOG';
+}
+
+function scoring_result_evidence_code(array $row): string {
+    if (scoring_task_flight_result_status($row) !== 'track') {
+        return 'N';
+    }
+    if (array_key_exists('source', $row) || array_key_exists('validation_status', $row) || array_key_exists('storage_path', $row)) {
+        return scoring_tracklog_evidence_code($row);
+    }
+    return scoring_normalize_evidence_code($row['evidence_code'] ?? 'LOG');
+}
+
+function scoring_evidence_label(string $code): string {
+    $labels = [
+        'N' => 'Geen tracklog',
+        'LT' => 'Live tracking',
+        'LOG' => 'Niet-gevalideerde tracklog',
+        'FAI' => 'CIVL/FAI gevalideerde IGC',
+    ];
+    return $labels[scoring_normalize_evidence_code($code)] ?? $labels['LOG'];
+}
+
+function scoring_evidence_legend_text(): string {
+    return 'Bewijs: FAI = CIVL/FAI gevalideerde IGC, LOG = niet-gevalideerde tracklog, LT = live-tracking reconstructie, N = geen tracklog.';
+}
+
 function scoring_is_manual_minimum_tracklog(array $tracklog): bool {
     return scoring_task_flight_result_status($tracklog) === 'minimum_distance'
         || ((string)($tracklog['original_filename'] ?? '') === scoring_manual_minimum_filename()
@@ -2467,8 +2985,8 @@ function scoring_add_manual_status_flight(PDO $pdo, array $task, string $status,
 
         $insert = $pdo->prepare(
             'INSERT INTO rankings_scoring_task_flights
-             (task_id, tracklog_id, pilot_name, pilot_email, result_status, is_excluded, exclude_reason, distance_km, reached_ess, reached_goal, evaluation_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)'
+             (task_id, tracklog_id, pilot_name, pilot_email, result_status, evidence_code, is_excluded, exclude_reason, distance_km, reached_ess, reached_goal, evaluation_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)'
         );
         $insert->execute([
             (int)$task['id'],
@@ -2476,6 +2994,7 @@ function scoring_add_manual_status_flight(PDO $pdo, array $task, string $status,
             $pilotName,
             $email,
             $status,
+            'N',
             $isExcluded,
             $excludeReason,
             $distance,
@@ -2493,6 +3012,55 @@ function scoring_add_manual_status_flight(PDO $pdo, array $task, string $status,
         }
         throw $e;
     }
+}
+
+function scoring_normalize_landing_conditions(?string $conditions): ?string {
+    $conditions = strtolower(trim((string)$conditions));
+    return in_array($conditions, ['safe', 'challenging', 'dangerous'], true) ? $conditions : null;
+}
+
+function scoring_landing_conditions_label(?string $conditions): string {
+    $labels = [
+        'safe' => 'Veilig',
+        'challenging' => 'Uitdagend',
+        'dangerous' => 'Gevaarlijk',
+    ];
+    $conditions = scoring_normalize_landing_conditions($conditions);
+    return $conditions !== null ? $labels[$conditions] : '-';
+}
+
+function scoring_store_landing_report(PDO $pdo, int $taskId, string $pilotName, ?string $conditions, bool $needsRetrieval): int {
+    scoring_ensure_landing_report_table($pdo);
+    $pilotName = trim($pilotName);
+    if ($taskId <= 0) {
+        throw new RuntimeException('Taak niet gevonden.');
+    }
+    if ($pilotName === '') {
+        throw new RuntimeException('Vul je naam in.');
+    }
+    $conditions = scoring_normalize_landing_conditions($conditions);
+    $stmt = $pdo->prepare(
+        'INSERT INTO rankings_scoring_task_landing_reports
+         (task_id, pilot_name, conditions, needs_retrieval, safe_reported_at)
+         VALUES (?, ?, ?, ?, UTC_TIMESTAMP())'
+    );
+    $stmt->execute([$taskId, $pilotName, $conditions, $needsRetrieval ? 1 : 0]);
+    return (int)$pdo->lastInsertId();
+}
+
+function scoring_load_task_landing_reports(PDO $pdo, int $taskId): array {
+    if ($taskId <= 0) {
+        return [];
+    }
+    scoring_ensure_landing_report_table($pdo);
+    $stmt = $pdo->prepare(
+        'SELECT *
+         FROM rankings_scoring_task_landing_reports
+         WHERE task_id = ?
+         ORDER BY safe_reported_at DESC, id DESC'
+    );
+    $stmt->execute([$taskId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
 function scoring_decimal_or_null($value): ?float {
@@ -3708,6 +4276,7 @@ function scoring_ensure_publication_snapshot_tables(PDO $pdo): void {
           pilot_email VARCHAR(190) DEFAULT NULL,
           pilot_identity_id INT UNSIGNED DEFAULT NULL,
           result_status VARCHAR(30) NOT NULL DEFAULT \'track\',
+          evidence_code VARCHAR(10) NOT NULL DEFAULT \'LOG\',
           distance_km DECIMAL(9,3) DEFAULT NULL,
           start_time_at DATETIME DEFAULT NULL,
           ess_time_at DATETIME DEFAULT NULL,
@@ -3739,6 +4308,9 @@ function scoring_ensure_publication_snapshot_tables(PDO $pdo): void {
     if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_public_results', 'result_status')) {
         scoring_exec_schema_change($pdo, "ALTER TABLE rankings_scoring_task_public_results ADD COLUMN result_status VARCHAR(30) NOT NULL DEFAULT 'track' AFTER pilot_identity_id", [1060], ['42S21']);
     }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_public_results', 'evidence_code')) {
+        scoring_exec_schema_change($pdo, "ALTER TABLE rankings_scoring_task_public_results ADD COLUMN evidence_code VARCHAR(10) NOT NULL DEFAULT 'LOG' AFTER result_status", [1060], ['42S21']);
+    }
 }
 
 function scoring_load_task_publication(PDO $pdo, int $taskId): ?array {
@@ -3761,10 +4333,13 @@ function scoring_load_task_public_results(PDO $pdo, int $taskId): array {
         return [];
     }
     $stmt = $pdo->prepare(
-        'SELECT *
-         FROM rankings_scoring_task_public_results
-         WHERE task_id = ?
-         ORDER BY rank_no IS NULL ASC, rank_no ASC, total_points DESC, pilot_name ASC'
+        'SELECT pr.*, tl.storage_path, tl.original_filename, tl.source, tl.validation_status
+         FROM rankings_scoring_task_public_results pr
+         JOIN rankings_scoring_task_flights f
+           ON f.id = pr.source_flight_id AND f.task_id = pr.task_id
+         JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
+         WHERE pr.task_id = ?
+         ORDER BY pr.rank_no IS NULL ASC, pr.rank_no ASC, pr.total_points DESC, pr.pilot_name ASC'
     );
     $stmt->execute([$taskId]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -3799,6 +4374,7 @@ function scoring_publish_task_results(PDO $pdo, int $taskId): array {
     }
     scoring_ensure_publication_snapshot_tables($pdo);
     scoring_ensure_task_review_columns($pdo);
+    scoring_ensure_track_collection_tables($pdo);
     if (!scoring_publication_snapshots_available($pdo)) {
         throw new RuntimeException('De publicatie-tabellen ontbreken nog. Voer database/scoring_schema.sql opnieuw uit.');
     }
@@ -3828,13 +4404,15 @@ function scoring_publish_task_results(PDO $pdo, int $taskId): array {
         $stmt = $pdo->prepare(
             "SELECT f.id AS source_flight_id,
                     $identitySelect,
-                    f.result_status,
+                    f.result_status, f.evidence_code,
                     f.distance_km, f.start_time_at, f.ess_time_at, f.goal_time_at, f.time_seconds,
                     f.reached_ess, f.reached_goal, f.distance_points, f.time_points, f.departure_points,
                     f.leading_points, f.arrival_position_points, f.arrival_time_points, f.total_points,
-                    f.rank_no, f.evaluation_json, f.scored_at
+                    f.rank_no, f.evaluation_json, f.scored_at,
+                    tl.storage_path, tl.original_filename, tl.source, tl.validation_status
              FROM rankings_scoring_task_flights f
              JOIN rankings_scoring_tasks t ON t.id = f.task_id
+             JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
              $identityJoin
              WHERE f.task_id = ?
                AND f.is_excluded = 0
@@ -3852,11 +4430,11 @@ function scoring_publish_task_results(PDO $pdo, int $taskId): array {
         $insert = $pdo->prepare(
             'INSERT INTO rankings_scoring_task_public_results
              (task_id, source_flight_id, pilot_name, pilot_email, pilot_identity_id,
-              result_status, distance_km, start_time_at, ess_time_at, goal_time_at, time_seconds,
+              result_status, evidence_code, distance_km, start_time_at, ess_time_at, goal_time_at, time_seconds,
               reached_ess, reached_goal, distance_points, time_points, departure_points,
               leading_points, arrival_position_points, arrival_time_points, total_points,
               rank_no, evaluation_json, scored_at, published_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         foreach ($rows as $row) {
             $identityId = isset($row['pilot_identity_id']) ? (int)$row['pilot_identity_id'] : 0;
@@ -3867,6 +4445,7 @@ function scoring_publish_task_results(PDO $pdo, int $taskId): array {
                 $row['pilot_email'] ?? null,
                 $identityId > 0 ? $identityId : null,
                 scoring_task_flight_result_status($row),
+                scoring_result_evidence_code($row),
                 $row['distance_km'],
                 $row['start_time_at'],
                 $row['ess_time_at'],
@@ -3936,6 +4515,7 @@ function scoring_competition_standings_pilot_key(string $pilotName, ?string $pil
 }
 
 function scoring_competition_standings_through_task(PDO $pdo, int $taskId): array {
+    scoring_ensure_publication_snapshot_tables($pdo);
     $throughTask = scoring_load_task($pdo, $taskId);
     if (!$throughTask) {
         throw new RuntimeException('Taak niet gevonden.');
@@ -3985,9 +4565,13 @@ function scoring_competition_standings_through_task(PDO $pdo, int $taskId): arra
     }, $tasks);
     $placeholders = implode(',', array_fill(0, count($taskIds), '?'));
     $stmt = $pdo->prepare(
-        "SELECT r.task_id, r.pilot_name, r.pilot_email, r.pilot_identity_id, r.total_points
+        "SELECT r.task_id, r.pilot_name, r.pilot_email, r.pilot_identity_id, r.result_status, r.evidence_code, r.total_points,
+                tl.storage_path, tl.source, tl.validation_status
          FROM rankings_scoring_task_public_results r
          JOIN rankings_scoring_tasks t ON t.id = r.task_id
+         JOIN rankings_scoring_task_flights f
+           ON f.id = r.source_flight_id AND f.task_id = r.task_id
+         JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
          WHERE r.task_id IN ($placeholders)
          ORDER BY t.task_date ASC, t.id ASC, r.rank_no ASC, r.total_points DESC, r.pilot_name ASC"
     );
@@ -4006,6 +4590,7 @@ function scoring_competition_standings_through_task(PDO $pdo, int $taskId): arra
                 'pilot_name' => (string)$flight['pilot_name'],
                 'pilot_email' => (string)($flight['pilot_email'] ?? ''),
                 'task_points' => array_fill(0, count($tasks), 0.0),
+                'task_evidence' => array_fill(0, count($tasks), ''),
                 'total_points' => 0.0,
             ];
         }
@@ -4015,6 +4600,7 @@ function scoring_competition_standings_through_task(PDO $pdo, int $taskId): arra
         if ($points >= (float)$rowsByPilot[$key]['task_points'][$taskIndex]) {
             $rowsByPilot[$key]['total_points'] += $points - (float)$rowsByPilot[$key]['task_points'][$taskIndex];
             $rowsByPilot[$key]['task_points'][$taskIndex] = $points;
+            $rowsByPilot[$key]['task_evidence'][$taskIndex] = scoring_result_evidence_code($flight);
             $rowsByPilot[$key]['pilot_name'] = (string)$flight['pilot_name'];
             if (!scoring_is_placeholder_email($flight['pilot_email'] ?? null)) {
                 $rowsByPilot[$key]['pilot_email'] = (string)$flight['pilot_email'];
@@ -4824,6 +5410,7 @@ function scoring_allocate_gap2025_points(array $task, array $evaluations, float 
 
 function scoring_score_task(PDO $pdo, int $taskId): array {
     scoring_ensure_task_review_columns($pdo);
+    scoring_ensure_track_collection_tables($pdo);
     $task = scoring_load_task($pdo, $taskId);
     if (!$task) {
         throw new RuntimeException('Taak niet gevonden.');
@@ -4838,7 +5425,7 @@ function scoring_score_task(PDO $pdo, int $taskId): array {
     }
 
     $stmt = $pdo->prepare(
-        'SELECT f.*, tl.storage_path, tl.original_filename, tl.fix_count
+        'SELECT f.*, tl.storage_path, tl.original_filename, tl.fix_count, tl.source, tl.validation_status
          FROM rankings_scoring_task_flights f
          JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
          WHERE f.task_id = ?
@@ -4942,7 +5529,7 @@ function scoring_score_task(PDO $pdo, int $taskId): array {
          SET distance_km = ?, start_time_at = ?, ess_time_at = ?, goal_time_at = ?, time_seconds = ?,
              reached_ess = ?, reached_goal = ?, distance_points = ?, time_points = ?, departure_points = ?,
              leading_points = ?, arrival_position_points = ?, arrival_time_points = ?, total_points = ?,
-             rank_no = ?, evaluation_json = ?, scored_at = NOW()
+             rank_no = ?, evidence_code = ?, evaluation_json = ?, scored_at = NOW()
          WHERE id = ?'
     );
     foreach ($included as $entry) {
@@ -4965,6 +5552,7 @@ function scoring_score_task(PDO $pdo, int $taskId): array {
             $points['arrival_time_points'],
             $points['total_points'],
             $ranks[$flightId] ?? null,
+            scoring_result_evidence_code($entry['flight']),
             json_encode($ev, JSON_UNESCAPED_UNICODE),
             $flightId,
         ]);
@@ -4975,11 +5563,11 @@ function scoring_score_task(PDO $pdo, int $taskId): array {
          SET distance_km = 0, start_time_at = NULL, ess_time_at = NULL, goal_time_at = NULL, time_seconds = NULL,
              reached_ess = 0, reached_goal = 0, distance_points = 0, time_points = 0, departure_points = 0,
              leading_points = 0, arrival_position_points = 0, arrival_time_points = 0, total_points = 0,
-             rank_no = NULL, evaluation_json = ?, scored_at = NOW()
+             rank_no = NULL, evidence_code = ?, evaluation_json = ?, scored_at = NOW()
          WHERE id = ?'
     );
     foreach ($dnfFlights as $flight) {
-        $dnfUpdate->execute([json_encode(scoring_manual_dnf_evaluation(), JSON_UNESCAPED_UNICODE), (int)$flight['id']]);
+        $dnfUpdate->execute(['N', json_encode(scoring_manual_dnf_evaluation(), JSON_UNESCAPED_UNICODE), (int)$flight['id']]);
     }
 
     $summary = $allocation['summary'];

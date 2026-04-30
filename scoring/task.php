@@ -19,6 +19,8 @@ $taskIdentityReviewAvailable = false;
 try {
     scoring_ensure_track_collection_tables($pdo);
     scoring_ensure_task_review_columns($pdo);
+    scoring_ensure_task_active_column($pdo);
+    scoring_ensure_landing_report_table($pdo);
     $tracklogSourceAvailable = scoring_tracklog_source_columns_available($pdo);
     $taskReviewStatusAvailable = scoring_task_review_status_available($pdo);
     $taskIdentityReviewAvailable = scoring_task_identity_review_available($pdo);
@@ -123,13 +125,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $taskDate = trim((string)($_POST['task_date'] ?? ''));
                 $windowOpen = trim((string)($_POST['window_open'] ?? ''));
                 $windowClose = trim((string)($_POST['window_close'] ?? ''));
+                $taskDeadline = trim((string)($_POST['task_deadline'] ?? ''));
+                $reportingDeadline = trim((string)($_POST['reporting_deadline'] ?? ''));
                 $taskType = (string)($_POST['task_type'] ?? 'race');
-                if ($name === '' || $taskDate === '' || $windowOpen === '' || $windowClose === '') {
-                    throw new RuntimeException('Vul naam, datum en taakvenster in.');
+                if ($name === '' || $taskDate === '' || $windowOpen === '' || $windowClose === '' || $taskDeadline === '' || $reportingDeadline === '') {
+                    throw new RuntimeException('Vul naam, datum, taakvenster en deadlines in.');
+                }
+                $windowOpenSql = scoring_local_input_to_utc_sql($windowOpen);
+                $windowCloseSql = scoring_local_input_to_utc_sql($windowClose);
+                $taskDeadlineSql = scoring_local_input_to_utc_sql($taskDeadline);
+                $reportingDeadlineSql = scoring_local_input_to_utc_sql($reportingDeadline);
+                if (strtotime($reportingDeadlineSql . ' UTC') < strtotime($taskDeadlineSql . ' UTC')) {
+                    throw new RuntimeException('De melddeadline moet na de taakdeadline liggen.');
                 }
                 $stmt = $pdo->prepare(
                     'UPDATE rankings_scoring_tasks
-                     SET name = ?, task_date = ?, window_open_at = ?, window_close_at = ?, task_type = ?,
+                     SET name = ?, task_date = ?, window_open_at = ?, window_close_at = ?,
+                         task_deadline_at = ?, reporting_deadline_at = ?, task_type = ?,
                          minimum_distance_km = ?, nominal_distance_km = ?, nominal_time_minutes = ?,
                          use_distance_points = ?, use_time_points = ?, use_departure_points = ?, use_leading_points = ?,
                          use_arrival_position_points = ?, use_arrival_time_points = ?
@@ -138,8 +150,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([
                     $name,
                     $taskDate,
-                    scoring_local_input_to_utc_sql($windowOpen),
-                    scoring_local_input_to_utc_sql($windowClose),
+                    $windowOpenSql,
+                    $windowCloseSql,
+                    $taskDeadlineSql,
+                    $reportingDeadlineSql,
                     $taskType,
                     scoring_decimal_or_null($_POST['minimum_distance_km'] ?? '') ?? 5.0,
                     scoring_decimal_or_null($_POST['nominal_distance_km'] ?? '') ?? 50.0,
@@ -267,7 +281,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         throw new RuntimeException('Upload een IGC-bestand.');
                     }
                     $tracklogId = scoring_store_tracklog_upload($pdo, $_FILES['manual_tracklog'], $pilotName, $pilotEmail !== '' ? $pilotEmail : null);
-                    $stmt = $pdo->prepare('SELECT pilot_name, pilot_email FROM rankings_scoring_tracklogs WHERE id = ? LIMIT 1');
+                    $stmt = $pdo->prepare('SELECT pilot_name, pilot_email, validation_status FROM rankings_scoring_tracklogs WHERE id = ? LIMIT 1');
                     $stmt->execute([$tracklogId]);
                     $tracklog = $stmt->fetch(PDO::FETCH_ASSOC);
                     if (!$tracklog) {
@@ -296,7 +310,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             scoring_assign_known_task_flight_identity($pdo, (int)$task['competition_id'], $flightId, (string)$tracklog['pilot_name'], $tracklog['pilot_email'] ?? null);
                         }
                     }
-                    $notice = 'Tracklog van ' . $tracklog['pilot_name'] . ' is toegevoegd aan deze taak.';
+                    $validationStatus = strtolower(trim((string)($tracklog['validation_status'] ?? 'not_checked')));
+                    $validationNote = '';
+                    if ($validationStatus === 'passed') {
+                        $validationNote = ' FAI-validatie: geldig.';
+                    } elseif ($validationStatus === 'failed') {
+                        $validationNote = ' FAI-validatie: niet geldig; bewijs blijft LOG.';
+                    } elseif ($validationStatus === 'error') {
+                        $validationNote = ' FAI-validatie kon niet worden afgerond; bewijs blijft LOG.';
+                    }
+                    $notice = 'Tracklog van ' . $tracklog['pilot_name'] . ' is toegevoegd aan deze taak.' . $validationNote;
                 } elseif (in_array($manualType, ['minimum_distance', 'dnf', 'abs'], true)) {
                     $task = scoring_load_task($pdo, $taskId);
                     if (!$task) {
@@ -490,6 +513,7 @@ $reviewGroupStates = [];
 $pilotIdentityAvailable = scoring_pilot_identities_available($pdo);
 $pilotIdentifierOptions = [];
 $results = [];
+$landingReports = [];
 try {
     $stmt = $pdo->prepare('SELECT * FROM rankings_scoring_waypoints WHERE competition_id = ? ORDER BY name ASC');
     $stmt->execute([(int)$task['competition_id']]);
@@ -498,8 +522,8 @@ try {
     $pilotIdentifierOptions = scoring_load_competition_pilot_identifier_options($pdo, $task);
 
     $tracklogSourceSelect = $tracklogSourceAvailable
-        ? ', tl.source, tl.source_external_id, tl.source_url'
-        : ", 'manual_upload' AS source, NULL AS source_external_id, NULL AS source_url";
+        ? ', tl.source, tl.source_external_id, tl.source_url, tl.validation_status'
+        : ", 'manual_upload' AS source, NULL AS source_external_id, NULL AS source_url, 'not_checked' AS validation_status";
 
     if ($pilotIdentityAvailable) {
         $stmt = $pdo->prepare(
@@ -600,13 +624,15 @@ try {
     }
 
     $stmt = $pdo->prepare(
-        'SELECT *
-         FROM rankings_scoring_task_flights
-         WHERE task_id = ? AND is_excluded = 0 AND scored_at IS NOT NULL
+        'SELECT f.*, tl.storage_path, tl.original_filename, tl.source, tl.validation_status
+         FROM rankings_scoring_task_flights f
+         JOIN rankings_scoring_tracklogs tl ON tl.id = f.tracklog_id
+         WHERE f.task_id = ? AND f.is_excluded = 0 AND f.scored_at IS NOT NULL
          ORDER BY rank_no IS NULL ASC, rank_no ASC, total_points DESC, pilot_name ASC'
     );
     $stmt->execute([$taskId]);
     $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $landingReports = scoring_load_task_landing_reports($pdo, $taskId);
 } catch (Throwable $e) {
     $error = app_debug_enabled() ? 'Laden mislukt: ' . $e->getMessage() : 'Laden mislukt.';
 }
@@ -796,6 +822,12 @@ app_page_start($task['name'] . ' - Scoring', [
         <label>Venster dicht
           <input type="datetime-local" name="window_close" value="<?= h(scoring_utc_sql_to_local_input($task['window_close_at'])) ?>" required>
         </label>
+        <label>Taakdeadline
+          <input type="datetime-local" name="task_deadline" value="<?= h(scoring_utc_sql_to_local_input(scoring_task_deadline_at($task))) ?>" required>
+        </label>
+        <label>Melddeadline
+          <input type="datetime-local" name="reporting_deadline" value="<?= h(scoring_utc_sql_to_local_input(scoring_task_reporting_deadline_at($task))) ?>" required>
+        </label>
         <label>Type
           <select name="task_type">
             <option value="race" <?= $task['task_type'] === 'race' ? 'selected' : '' ?>>Race</option>
@@ -851,11 +883,11 @@ app_page_start($task['name'] . ' - Scoring', [
     </section>
   <?php endif; ?>
 
-  <section class="card task-share-admin-card">
-    <div class="section-header">
-      <div>
-        <h2>Taak delen</h2>
-        <p class="muted">Deel deze briefingpagina met piloten voor taakdetails, XCTSK-download en instrument QR-code.</p>
+	  <section class="card task-share-admin-card">
+	    <div class="section-header">
+	      <div>
+	        <h2>Taak delen</h2>
+	        <p class="muted">Deel deze briefingpagina met piloten voor taakdetails, XCTSK-download en instrument QR-code.</p>
       </div>
       <?php if (count($turnpoints) >= 2): ?>
         <p class="actions">
@@ -868,11 +900,49 @@ app_page_start($task['name'] . ' - Scoring', [
       <p class="muted">Voeg minimaal twee taakpunten toe om een deelbare instrumenttaak te maken.</p>
     <?php else: ?>
       <label>Deellink
-        <input type="url" value="<?= h($taskShareUrl) ?>" readonly>
-      </label>
-    <?php endif; ?>
-  </section>
-    </div>
+	        <input type="url" value="<?= h($taskShareUrl) ?>" readonly>
+	      </label>
+	    <?php endif; ?>
+	  </section>
+
+	  <section class="card">
+	    <div class="section-header">
+	      <div>
+	        <h2>Landingmeldingen</h2>
+	        <p class="muted">Piloten melden hier dat ze veilig zijn geland en of retrieval nodig is.</p>
+	      </div>
+	      <p class="actions">
+	        <a class="btn secondary" href="../public/report_landing.php?task_id=<?= (int)$taskId ?>" target="_blank" rel="noopener">Open meldformulier</a>
+	      </p>
+	    </div>
+	    <?php if (empty($landingReports)): ?>
+	      <p class="muted">Nog geen landingmeldingen voor deze taak.</p>
+	    <?php else: ?>
+	      <div class="table-responsive">
+	        <table class="striped compact-table">
+	          <thead>
+	            <tr>
+	              <th>Tijd</th>
+	              <th>Piloot</th>
+	              <th>Condities</th>
+	              <th>Retrieval</th>
+	            </tr>
+	          </thead>
+	          <tbody>
+	            <?php foreach ($landingReports as $report): ?>
+	              <tr>
+	                <td><?= h(scoring_utc_sql_to_display($report['safe_reported_at'])) ?></td>
+	                <td><?= h($report['pilot_name']) ?></td>
+	                <td><?= h(scoring_landing_conditions_label($report['conditions'] ?? null)) ?></td>
+	                <td><?= (int)$report['needs_retrieval'] === 1 ? 'Ja' : 'Nee' ?></td>
+	              </tr>
+	            <?php endforeach; ?>
+	          </tbody>
+	        </table>
+	      </div>
+	    <?php endif; ?>
+	  </section>
+	    </div>
 
     <div
       class="tab-panel"
@@ -1021,10 +1091,11 @@ app_page_start($task['name'] . ' - Scoring', [
                         } else {
                             $trackLabelParts[] = 'Flymaster reconstructie';
                         }
-                    } elseif (!empty($flight['uploaded_at'])) {
-                        $trackLabelParts[] = 'upload ' . scoring_utc_sql_to_display($flight['uploaded_at']);
-                    }
-                    $trackLabelParts[] = 'kandidaat #' . $flightId;
+	                    } elseif (!empty($flight['uploaded_at'])) {
+	                        $trackLabelParts[] = 'upload ' . scoring_utc_sql_to_display($flight['uploaded_at']);
+	                    }
+	                    $trackLabelParts[] = scoring_tracklog_evidence_code($flight);
+	                    $trackLabelParts[] = 'kandidaat #' . $flightId;
                     $trackLabel = implode(' · ', $trackLabelParts);
                   ?>
                       <option value="<?= $flightId ?>" data-map-url="task.php?id=<?= (int)$taskId ?>&amp;review_map=1&amp;flight_id=<?= $flightId ?>" <?= $selectedTrackId === $flightId ? 'selected' : '' ?>><?= h($trackLabel) ?></option>
@@ -1154,9 +1225,10 @@ app_page_start($task['name'] . ' - Scoring', [
           </thead>
           <tbody>
             <?php foreach ($results as $row): ?>
+              <?php $evidenceCode = scoring_result_evidence_code($row); ?>
               <tr>
                 <td><?= (int)$row['rank_no'] ?></td>
-                <td><?= h($row['pilot_name']) ?></td>
+                <td><?= h($row['pilot_name']) ?> <span class="evidence-badge evidence-<?= h(strtolower($evidenceCode)) ?>" title="<?= h(scoring_evidence_label($evidenceCode)) ?>"><?= h($evidenceCode) ?></span></td>
                 <td><?= h(app_format_compact_number($row['distance_km'], 3)) ?> km<?= (int)$row['reached_goal'] === 1 ? ' <span class="muted">goal</span>' : '' ?></td>
                 <td><?= h(scoring_format_duration($row['time_seconds'] !== null ? (int)$row['time_seconds'] : null)) ?></td>
                 <td><?= h(app_format_compact_number($row['distance_points'], 1)) ?></td>
@@ -1169,6 +1241,7 @@ app_page_start($task['name'] . ' - Scoring', [
           </tbody>
         </table>
       </div>
+      <p class="muted evidence-legend"><?= h(scoring_evidence_legend_text()) ?></p>
       <?php if ($task['status'] === 'published'): ?>
         <p class="actions">
           <a class="btn secondary" href="../public/scoring_task.php?id=<?= (int)$task['id'] ?>">Bekijk publieke taakresultaten</a>

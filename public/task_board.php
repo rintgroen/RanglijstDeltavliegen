@@ -82,6 +82,10 @@ if ($showStartGates) {
         $gateLabels[] = scoring_utc_sql_to_local_time($task['window_open_at']);
     }
 }
+$taskDeadlineAt = scoring_task_deadline_at($task);
+$reportingDeadlineAt = scoring_task_reporting_deadline_at($task);
+$landingReportHref = 'report_landing.php?task_id=' . (int)$taskId;
+$trackUploadHref = 'track_upload.php?task_id=' . (int)$taskId;
 
 app_page_start(($competition['name'] ?? $task['competition_name']) . ' - ' . $task['name'], [
     'show_public_nav' => false,
@@ -104,14 +108,15 @@ app_page_start(($competition['name'] ?? $task['competition_name']) . ' - ' . $ta
 
   <section class="card public-task-map-card task-share-map-card">
     <h2>Taak</h2>
-    <div class="stat-grid">
-      <div class="stat"><div class="muted">Datum</div><strong><?= h($task['task_date']) ?></strong></div>
-      <div class="stat"><div class="muted">Type</div><strong><?= h(scoring_xctsk_start_type($task)) ?></strong></div>
-      <div class="stat"><div class="muted">Take-off open</div><strong><?= h(scoring_utc_sql_to_display($task['window_open_at'])) ?></strong></div>
-      <div class="stat"><div class="muted">Deadline</div><strong><?= h(scoring_utc_sql_to_display($task['window_close_at'])) ?></strong></div>
-      <div class="stat"><div class="muted">Route totaal</div><strong><?= h(app_format_compact_number($routeDistance, 3)) ?> km</strong></div>
-      <div class="stat"><div class="muted">Speedsectie</div><strong><?= h(app_format_compact_number($speedDistance, 3)) ?> km</strong></div>
-    </div>
+      <div class="stat-grid">
+        <div class="stat"><div class="muted">Datum</div><strong><?= h($task['task_date']) ?></strong></div>
+        <div class="stat"><div class="muted">Type</div><strong><?= h(scoring_xctsk_start_type($task)) ?></strong></div>
+        <div class="stat"><div class="muted">Take-off open</div><strong><?= h(scoring_utc_sql_to_display($task['window_open_at'])) ?></strong></div>
+        <div class="stat"><div class="muted">Taakdeadline</div><strong><?= h(scoring_utc_sql_to_display($taskDeadlineAt)) ?></strong></div>
+        <div class="stat"><div class="muted">Melddeadline</div><strong><?= h(scoring_utc_sql_to_display($reportingDeadlineAt)) ?></strong></div>
+        <div class="stat"><div class="muted">Route totaal</div><strong><?= h(app_format_compact_number($routeDistance, 3)) ?> km</strong></div>
+        <div class="stat"><div class="muted">Speedsectie</div><strong><?= h(app_format_compact_number($speedDistance, 3)) ?> km</strong></div>
+      </div>
 
     <div class="public-task-layout">
       <div class="public-task-turnpoints">
@@ -177,8 +182,8 @@ app_page_start(($competition['name'] ?? $task['competition_name']) . ' - ' . $ta
     </div>
   </section>
 
-  <section class="card task-share-code-card">
-    <h2>Delen met instrumenten</h2>
+	  <section class="card task-share-code-card">
+	    <h2>Delen met instrumenten</h2>
     <?php if ($qrSvg !== ''): ?>
       <div class="task-share-code-layout">
         <div class="task-share-code-copy">
@@ -196,7 +201,17 @@ app_page_start(($competition['name'] ?? $task['competition_name']) . ' - ' . $ta
       <p class="muted"><?= h($qrError) ?></p>
     <?php else: ?>
       <p class="muted">Voeg minimaal twee taakpunten toe om een instrumentcode te maken.</p>
-    <?php endif; ?>
-  </section>
-</main>
+	    <?php endif; ?>
+	  </section>
+
+	  <section class="card task-share-pilot-actions-card">
+	    <h2>Na de vlucht</h2>
+	    <p class="muted">Meld voor <?= h(scoring_utc_sql_to_display($reportingDeadlineAt)) ?> dat je veilig bent. De taakdeadline <?= h(scoring_utc_sql_to_display($taskDeadlineAt)) ?> is de laatste tijd die voor deze taak telt.</p>
+	    <p class="task-share-pilot-actions">
+	      <a class="btn" href="<?= h($landingReportHref) ?>">Landing melden</a>
+	      <a class="btn secondary" href="<?= h($trackUploadHref) ?>">Tracklog uploaden</a>
+	    </p>
+	    <p class="muted task-share-pilot-note">Flymaster Live kan als voorlopige score-evidence worden gebruikt. Een originele, valide IGC kan gunstiger zijn voor timing en blijft de beste evidence voor strengere wedstrijden.</p>
+	  </section>
+	</main>
 <?php app_page_end(app_site_name()); ?>

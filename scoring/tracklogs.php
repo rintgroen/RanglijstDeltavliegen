@@ -5,6 +5,8 @@ require_once __DIR__ . '/../includes/scoring.php';
 app_enable_debug();
 $pdo = app_db_or_fail();
 $scorer = scoring_require_scorer($pdo);
+scoring_ensure_track_collection_tables($pdo);
+$csrf = app_csrf_token();
 
 $q = substr(trim((string)($_GET['q'] ?? '')), 0, 190);
 $page = max(1, (int)($_GET['page'] ?? 1));
@@ -18,6 +20,7 @@ $selectedTracklog = null;
 $selectedPreview = null;
 $selectedPreviewJson = '';
 $totalPages = 1;
+$notice = null;
 
 $downloadTracklog = function (int $tracklogId) use ($pdo): void {
     if ($tracklogId <= 0) {
@@ -77,6 +80,23 @@ $pageUrl = function (array $params = []) use ($q, &$page): string {
     return 'tracklogs.php' . (!empty($query) ? '?' . http_build_query($query) : '');
 };
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        if (!app_check_csrf()) {
+            throw new RuntimeException('Ongeldige inzending. Probeer het opnieuw.');
+        }
+        $action = (string)($_POST['action'] ?? '');
+        if ($action !== 'validate_tracklog') {
+            throw new RuntimeException('Onbekende actie.');
+        }
+        $selectedId = (int)($_POST['tracklog_id'] ?? 0);
+        $validation = scoring_validate_tracklog_by_id($pdo, $selectedId, true);
+        $notice = 'FAI-validatie: ' . scoring_tracklog_validation_status_label($validation['validation_status'] ?? 'error') . '.';
+    } catch (Throwable $e) {
+        $error = app_debug_enabled() ? $e->getMessage() : 'Validatie mislukt.';
+    }
+}
+
 try {
     $where = ['storage_path <> ?'];
     $params = [''];
@@ -96,7 +116,7 @@ try {
         $offset = ($page - 1) * $perPage;
     }
 
-    $sql = 'SELECT id, pilot_name, pilot_email, original_filename, storage_path, first_fix_at, last_fix_at, fix_count, uploaded_at
+    $sql = 'SELECT id, pilot_name, pilot_email, original_filename, storage_path, source, validation_status, first_fix_at, last_fix_at, fix_count, uploaded_at
             FROM rankings_scoring_tracklogs
             WHERE ' . $whereSql . '
             ORDER BY uploaded_at DESC, id DESC
@@ -111,7 +131,7 @@ try {
 
     if ($selectedId > 0) {
         $stmt = $pdo->prepare(
-            'SELECT id, pilot_name, pilot_email, original_filename, storage_path, first_fix_at, last_fix_at, fix_count, uploaded_at
+            'SELECT id, pilot_name, pilot_email, original_filename, storage_path, source, validation_status, validation_checked_at, validation_service, validation_response, first_fix_at, last_fix_at, fix_count, uploaded_at
              FROM rankings_scoring_tracklogs
              WHERE id = ? AND storage_path <> ?
              LIMIT 1'
@@ -167,6 +187,7 @@ app_page_start('Tracklogs - Scoring', [
       </form>
     </div>
     <?php if ($error): ?><div class="alert error"><?= h($error) ?></div><?php endif; ?>
+    <?php if ($notice): ?><div class="alert success"><?= h($notice) ?></div><?php endif; ?>
   </section>
 
   <section class="card">
@@ -199,7 +220,10 @@ app_page_start('Tracklogs - Scoring', [
                     </td>
                     <td>
                       <a href="<?= h($tracklogHref) ?>"><?= h($tracklog['original_filename']) ?></a>
+                      <?php $evidenceCode = scoring_tracklog_evidence_code($tracklog); ?>
                       <br><span class="muted"><?= (int)$tracklog['fix_count'] ?> fixes</span>
+                      <br><span class="evidence-badge evidence-<?= h(strtolower($evidenceCode)) ?>" title="<?= h(scoring_evidence_label($evidenceCode)) ?>"><?= h($evidenceCode) ?></span>
+                      <span class="muted"><?= h(scoring_tracklog_validation_status_label($tracklog['validation_status'] ?? null)) ?></span>
                     </td>
                     <td><?= h(scoring_utc_sql_to_display($tracklog['uploaded_at'])) ?></td>
                   </tr>
@@ -227,7 +251,18 @@ app_page_start('Tracklogs - Scoring', [
               <h2><?= h($selectedTracklog['pilot_name']) ?></h2>
               <p class="muted"><?= h($selectedTracklog['original_filename']) ?></p>
             </div>
-            <a class="btn secondary" href="<?= h($pageUrl(['id' => (int)$selectedTracklog['id'], 'download' => 1])) ?>">Download IGC</a>
+            <?php $selectedSource = strtolower(trim((string)($selectedTracklog['source'] ?? 'manual_upload'))); ?>
+            <div class="inline">
+              <?php if (!in_array($selectedSource, ['flymaster_replay', 'livetrack24'], true)): ?>
+                <form method="post">
+                  <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+                  <input type="hidden" name="action" value="validate_tracklog">
+                  <input type="hidden" name="tracklog_id" value="<?= (int)$selectedTracklog['id'] ?>">
+                  <button type="submit" class="secondary">FAI valideren</button>
+                </form>
+              <?php endif; ?>
+              <a class="btn secondary" href="<?= h($pageUrl(['id' => (int)$selectedTracklog['id'], 'download' => 1])) ?>">Download IGC</a>
+            </div>
           </div>
           <dl class="tracklog-facts">
             <div>
@@ -242,6 +277,26 @@ app_page_start('Tracklogs - Scoring', [
               <dt>E-mail</dt>
               <dd><?= h(scoring_display_pilot_email($selectedTracklog['pilot_email'])) ?></dd>
             </div>
+            <?php $selectedEvidenceCode = scoring_tracklog_evidence_code($selectedTracklog); ?>
+            <div>
+              <dt>Bewijs</dt>
+              <dd><span class="evidence-badge evidence-<?= h(strtolower($selectedEvidenceCode)) ?>" title="<?= h(scoring_evidence_label($selectedEvidenceCode)) ?>"><?= h($selectedEvidenceCode) ?></span> <?= h(scoring_evidence_label($selectedEvidenceCode)) ?></dd>
+            </div>
+            <div>
+              <dt>FAI-validatie</dt>
+              <dd><?= h(scoring_tracklog_validation_status_label($selectedTracklog['validation_status'] ?? null)) ?></dd>
+            </div>
+            <div>
+              <dt>Gecontroleerd</dt>
+              <dd><?= h(scoring_utc_sql_to_display($selectedTracklog['validation_checked_at'] ?? null)) ?></dd>
+            </div>
+            <?php $validationMessage = scoring_tracklog_validation_message($selectedTracklog); ?>
+            <?php if ($validationMessage !== ''): ?>
+              <div>
+                <dt>Bericht</dt>
+                <dd><?= h($validationMessage) ?></dd>
+              </div>
+            <?php endif; ?>
           </dl>
           <?php if ($selectedPreview): ?>
             <div class="track-preview track-preview-large">

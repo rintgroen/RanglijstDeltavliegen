@@ -662,6 +662,35 @@ input[type="radio"] {
   padding: 0.65rem;
 }
 
+.radio-card-group {
+  border: 0;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  margin: 0.85rem 0 0;
+  padding: 0;
+}
+
+.radio-card-group legend {
+  color: var(--heading);
+  font-weight: 800;
+  margin-bottom: 0.35rem;
+}
+
+.radio-card-group label {
+  align-items: center;
+  background: var(--surface-strong);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.45rem;
+  padding: 0.65rem;
+}
+
+.radio-card-group-wide {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
 input:focus,
 select:focus,
 textarea:focus,
@@ -1254,6 +1283,71 @@ button.danger {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   min-height: 7rem;
   resize: vertical;
+}
+
+.task-share-pilot-actions-card {
+  padding: 1.15rem;
+}
+
+.task-share-pilot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin: 1rem 0;
+}
+
+.task-share-pilot-actions .btn {
+  min-width: 12.5rem;
+}
+
+.task-share-pilot-note {
+  border-top: 1px solid var(--border-soft);
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+}
+
+.evidence-badge {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 900;
+  justify-content: center;
+  line-height: 1;
+  margin-left: 0.35rem;
+  min-width: 1.6rem;
+  padding: 0.18rem 0.38rem;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.evidence-fai {
+  background: #e7f5ed;
+  border-color: #77b58e;
+  color: #15512d;
+}
+
+.evidence-log {
+  background: #eef6fb;
+  border-color: var(--border);
+  color: var(--primary-dark);
+}
+
+.evidence-lt {
+  background: #fff4d7;
+  border-color: #d9a937;
+  color: #715100;
+}
+
+.evidence-n {
+  background: #f4f1ef;
+  border-color: #c8bdb6;
+  color: #5a514d;
+}
+
+.evidence-legend {
+  margin-top: 0.8rem;
 }
 
 .track-preview-large {

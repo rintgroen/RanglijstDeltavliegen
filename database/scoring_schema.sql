@@ -176,6 +176,8 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_tasks (
   task_date DATE NOT NULL,
   window_open_at DATETIME NOT NULL,
   window_close_at DATETIME NOT NULL,
+  task_deadline_at DATETIME DEFAULT NULL,
+  reporting_deadline_at DATETIME DEFAULT NULL,
   task_type VARCHAR(30) NOT NULL DEFAULT 'race',
   active TINYINT(1) NOT NULL DEFAULT 1,
   formula_version VARCHAR(40) NOT NULL DEFAULT 'GAP2025',
@@ -245,6 +247,10 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_tracklogs (
   source_external_id VARCHAR(190) DEFAULT NULL,
   source_url VARCHAR(255) DEFAULT NULL,
   source_fetched_at DATETIME DEFAULT NULL,
+  validation_status VARCHAR(30) NOT NULL DEFAULT 'not_checked',
+  validation_checked_at DATETIME DEFAULT NULL,
+  validation_service VARCHAR(80) DEFAULT NULL,
+  validation_response MEDIUMTEXT DEFAULT NULL,
   first_fix_at DATETIME NOT NULL,
   last_fix_at DATETIME NOT NULL,
   min_lat DECIMAL(10,7) NOT NULL,
@@ -267,6 +273,7 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_task_flights (
   pilot_name VARCHAR(160) NOT NULL,
   pilot_email VARCHAR(190) NOT NULL,
   result_status VARCHAR(30) NOT NULL DEFAULT 'track',
+  evidence_code VARCHAR(10) NOT NULL DEFAULT 'LOG',
   identity_reviewed TINYINT(1) NOT NULL DEFAULT 0,
   is_excluded TINYINT(1) NOT NULL DEFAULT 0,
   exclude_reason VARCHAR(255) DEFAULT NULL,
@@ -324,6 +331,7 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_task_public_results (
   pilot_email VARCHAR(190) DEFAULT NULL,
   pilot_identity_id INT UNSIGNED DEFAULT NULL,
   result_status VARCHAR(30) NOT NULL DEFAULT 'track',
+  evidence_code VARCHAR(10) NOT NULL DEFAULT 'LOG',
   distance_km DECIMAL(9,3) DEFAULT NULL,
   start_time_at DATETIME DEFAULT NULL,
   ess_time_at DATETIME DEFAULT NULL,
@@ -347,6 +355,21 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_task_public_results (
   KEY idx_rankings_scoring_task_public_results_task (task_id),
   KEY idx_rankings_scoring_task_public_results_identity (pilot_identity_id),
   CONSTRAINT fk_rankings_scoring_task_public_results_task
+    FOREIGN KEY (task_id) REFERENCES rankings_scoring_tasks(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS rankings_scoring_task_landing_reports (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  task_id INT UNSIGNED NOT NULL,
+  pilot_name VARCHAR(160) NOT NULL,
+  conditions VARCHAR(30) DEFAULT NULL,
+  needs_retrieval TINYINT(1) NOT NULL DEFAULT 0,
+  safe_reported_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_rankings_scoring_task_landing_reports_task (task_id, safe_reported_at),
+  CONSTRAINT fk_rankings_scoring_task_landing_reports_task
     FOREIGN KEY (task_id) REFERENCES rankings_scoring_tasks(id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

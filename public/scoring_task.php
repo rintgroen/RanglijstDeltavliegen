@@ -276,9 +276,10 @@ function public_scoring_build_task_results_pdf(array $task, ?array $competition,
                 $distance .= ' goal';
             }
             $arrival = ((float)$row['arrival_position_points']) + ((float)$row['arrival_time_points']);
+            $evidenceCode = scoring_result_evidence_code($row);
             $writeMono(public_scoring_table_line([
                 [(string)($row['rank_no'] ?? '-'), 4, 'right'],
-                [(string)$row['pilot_name'], 28],
+                [(string)$row['pilot_name'] . ' [' . $evidenceCode . ']', 28],
                 [$distance, 13, 'right'],
                 [scoring_format_duration($row['time_seconds'] !== null ? (int)$row['time_seconds'] : null), 9, 'right'],
                 [app_format_compact_number($row['distance_points'], 1), 7, 'right'],
@@ -288,6 +289,8 @@ function public_scoring_build_task_results_pdf(array $task, ?array $competition,
                 [app_format_compact_number($row['total_points'], 1), 7, 'right'],
             ]));
         }
+        $y += 8.0;
+        $writeWrapped(scoring_evidence_legend_text(), 118, 9, 'F1');
     }
 
     if (!empty($summary['implementation_note'])) {
@@ -655,10 +658,13 @@ app_page_start(app_site_name() . ' - ' . $task['competition_name'] . ' ' . $task
           </thead>
           <tbody>
             <?php foreach ($results as $row): ?>
-              <?php $resultStatus = scoring_task_flight_result_status($row); ?>
+              <?php
+                $resultStatus = scoring_task_flight_result_status($row);
+                $evidenceCode = scoring_result_evidence_code($row);
+              ?>
               <tr>
                 <td><?= $resultStatus === 'dnf' ? 'DNF' : (int)$row['rank_no'] ?></td>
-                <td><?= h($row['pilot_name']) ?></td>
+                <td><?= h($row['pilot_name']) ?> <span class="evidence-badge evidence-<?= h(strtolower($evidenceCode)) ?>" title="<?= h(scoring_evidence_label($evidenceCode)) ?>"><?= h($evidenceCode) ?></span></td>
                 <td>
                   <?php if ($resultStatus === 'dnf'): ?>
                     DNF
@@ -677,6 +683,7 @@ app_page_start(app_site_name() . ' - ' . $task['competition_name'] . ' ' . $task
           </tbody>
         </table>
       </div>
+      <p class="muted evidence-legend"><?= h(scoring_evidence_legend_text()) ?></p>
       <?php if (!empty($summary['implementation_note'])): ?>
         <p class="muted"><?= h($summary['implementation_note']) ?></p>
       <?php endif; ?>

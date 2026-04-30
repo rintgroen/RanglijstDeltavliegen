@@ -139,30 +139,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $taskDate = trim((string)($_POST['task_date'] ?? ''));
                 $windowOpen = trim((string)($_POST['window_open'] ?? ''));
                 $windowClose = trim((string)($_POST['window_close'] ?? ''));
+                $taskDeadline = trim((string)($_POST['task_deadline'] ?? ''));
+                $reportingDeadline = trim((string)($_POST['reporting_deadline'] ?? ''));
                 $taskType = (string)($_POST['task_type'] ?? 'race');
-                if ($taskName === '' || $taskDate === '' || $windowOpen === '' || $windowClose === '') {
-                    throw new RuntimeException('Vul naam, datum en taakvenster in.');
+                if ($taskName === '' || $taskDate === '' || $windowOpen === '' || $windowClose === '' || $taskDeadline === '' || $reportingDeadline === '') {
+                    throw new RuntimeException('Vul naam, datum, taakvenster en deadlines in.');
                 }
                 if (!in_array($taskType, ['race', 'time_trial'], true)) {
                     throw new RuntimeException('Ongeldig taaktype.');
+                }
+                $windowOpenSql = scoring_local_input_to_utc_sql($windowOpen);
+                $windowCloseSql = scoring_local_input_to_utc_sql($windowClose);
+                $taskDeadlineSql = scoring_local_input_to_utc_sql($taskDeadline);
+                $reportingDeadlineSql = scoring_local_input_to_utc_sql($reportingDeadline);
+                if (strtotime($reportingDeadlineSql . ' UTC') < strtotime($taskDeadlineSql . ' UTC')) {
+                    throw new RuntimeException('De melddeadline moet na de taakdeadline liggen.');
                 }
                 $minDistance = scoring_decimal_or_null($_POST['minimum_distance_km'] ?? '') ?? 5.0;
                 $nomDistance = scoring_decimal_or_null($_POST['nominal_distance_km'] ?? '') ?? 50.0;
                 $nomTime = max(1, (int)($_POST['nominal_time_minutes'] ?? 90));
                 $stmt = $pdo->prepare(
                     'INSERT INTO rankings_scoring_tasks
-                     (competition_id, name, task_date, window_open_at, window_close_at, task_type,
+                     (competition_id, name, task_date, window_open_at, window_close_at, task_deadline_at, reporting_deadline_at, task_type,
                       minimum_distance_km, nominal_distance_km, nominal_time_minutes,
                       use_distance_points, use_time_points, use_departure_points, use_leading_points,
                       use_arrival_position_points, use_arrival_time_points)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 );
                 $stmt->execute([
                     $competitionId,
                     $taskName,
                     $taskDate,
-                    scoring_local_input_to_utc_sql($windowOpen),
-                    scoring_local_input_to_utc_sql($windowClose),
+                    $windowOpenSql,
+                    $windowCloseSql,
+                    $taskDeadlineSql,
+                    $reportingDeadlineSql,
                     $taskType,
                     $minDistance,
                     $nomDistance,
@@ -219,6 +230,8 @@ foreach ($tasks as $taskRow) {
 $defaultDate = date('Y-m-d');
 $defaultOpen = date('Y-m-d\T09:00');
 $defaultClose = date('Y-m-d\T19:00');
+$defaultTaskDeadline = $defaultClose;
+$defaultReportingDeadline = (new DateTimeImmutable($defaultClose, scoring_timezone()))->modify('+30 minutes')->format('Y-m-d\TH:i');
 
 app_page_start($competition['name'] . ' - Scoring', [
     'active_scoring' => 'dashboard',
@@ -468,6 +481,12 @@ app_page_start($competition['name'] . ' - Scoring', [
             </label>
             <label>Venster dicht
               <input type="datetime-local" name="window_close" value="<?= h($defaultClose) ?>" required>
+            </label>
+            <label>Taakdeadline
+              <input type="datetime-local" name="task_deadline" value="<?= h($defaultTaskDeadline) ?>" required>
+            </label>
+            <label>Melddeadline
+              <input type="datetime-local" name="reporting_deadline" value="<?= h($defaultReportingDeadline) ?>" required>
             </label>
             <label>Type
               <select name="task_type">
