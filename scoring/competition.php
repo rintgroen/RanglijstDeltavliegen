@@ -158,13 +158,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $minDistance = scoring_decimal_or_null($_POST['minimum_distance_km'] ?? '') ?? 5.0;
                 $nomDistance = scoring_decimal_or_null($_POST['nominal_distance_km'] ?? '') ?? 50.0;
                 $nomTime = max(1, (int)($_POST['nominal_time_minutes'] ?? 90));
+                $leadingTimeRatio = scoring_gap2025_input_leading_time_ratio($_POST['leading_time_ratio_percent'] ?? null, $competition);
                 $stmt = $pdo->prepare(
                     'INSERT INTO rankings_scoring_tasks
                      (competition_id, name, task_date, window_open_at, window_close_at, task_deadline_at, reporting_deadline_at, task_type,
-                      minimum_distance_km, nominal_distance_km, nominal_time_minutes,
+                      minimum_distance_km, nominal_distance_km, nominal_time_minutes, leading_time_ratio,
                       use_distance_points, use_time_points, use_departure_points, use_leading_points,
                       use_arrival_position_points, use_arrival_time_points)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 );
                 $stmt->execute([
                     $competitionId,
@@ -178,6 +179,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $minDistance,
                     $nomDistance,
                     $nomTime,
+                    $leadingTimeRatio,
                     isset($_POST['use_distance_points']) ? 1 : 0,
                     isset($_POST['use_time_points']) ? 1 : 0,
                     isset($_POST['use_departure_points']) ? 1 : 0,
@@ -232,6 +234,7 @@ $defaultOpen = date('Y-m-d\T09:00');
 $defaultClose = date('Y-m-d\T19:00');
 $defaultTaskDeadline = $defaultClose;
 $defaultReportingDeadline = (new DateTimeImmutable($defaultClose, scoring_timezone()))->modify('+30 minutes')->format('Y-m-d\TH:i');
+$defaultLeadingTimeRatioPercent = app_format_compact_number(scoring_gap2025_leading_time_ratio_percent($competition), 1);
 
 app_page_start($competition['name'] . ' - Scoring', [
     'active_scoring' => 'dashboard',
@@ -502,6 +505,9 @@ app_page_start($competition['name'] . ' - Scoring', [
             </label>
             <label>Nominale tijd (min)
               <input type="number" name="nominal_time_minutes" value="90" min="1">
+            </label>
+            <label>Leading Time Ratio (%)
+              <input type="number" name="leading_time_ratio_percent" value="<?= h($defaultLeadingTimeRatioPercent) ?>" min="0" max="26" step="0.1">
             </label>
           </div>
           <div class="checkbox-grid">

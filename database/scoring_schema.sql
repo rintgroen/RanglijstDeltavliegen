@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS rankings_scoring_tasks (
   minimum_distance_km DECIMAL(8,3) NOT NULL DEFAULT 5.000,
   nominal_distance_km DECIMAL(8,3) NOT NULL DEFAULT 50.000,
   nominal_time_minutes INT UNSIGNED NOT NULL DEFAULT 90,
+  leading_time_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.1750,
   use_distance_points TINYINT(1) NOT NULL DEFAULT 1,
   use_time_points TINYINT(1) NOT NULL DEFAULT 1,
   use_departure_points TINYINT(1) NOT NULL DEFAULT 0,

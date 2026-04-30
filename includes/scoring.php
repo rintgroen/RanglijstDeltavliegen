@@ -84,6 +84,59 @@ function scoring_task_reporting_deadline_at(array $task): ?string {
     return scoring_sql_add_minutes(scoring_task_deadline_at($task), 30);
 }
 
+function scoring_gap2025_class_profile(array $task): array {
+    $class = strtolower(trim((string)($task['class'] ?? '')));
+    $isParagliding = strpos($class, 'paraglid') !== false
+        || strpos($class, 'pg') !== false
+        || strpos($class, 'class 3') !== false
+        || strpos($class, 'klasse 3') !== false;
+    $isHgClass2 = !$isParagliding && (
+        strpos($class, 'class 2') !== false
+        || strpos($class, 'klasse 2') !== false
+    );
+
+    return [
+        'discipline' => $isParagliding ? 'paragliding' : 'hang_gliding',
+        'hg_class_2' => $isHgClass2,
+        'arrival_points' => !$isParagliding && !$isHgClass2,
+    ];
+}
+
+function scoring_gap2025_default_leading_time_ratio(array $task): float {
+    $profile = scoring_gap2025_class_profile($task);
+    return $profile['discipline'] === 'paragliding' ? 0.26 : 0.175;
+}
+
+function scoring_gap2025_normalize_leading_time_ratio(?float $ratio, array $task = []): float {
+    if ($ratio === null || !is_finite($ratio)) {
+        $ratio = scoring_gap2025_default_leading_time_ratio($task);
+    }
+    return max(0.0, min(0.26, $ratio));
+}
+
+function scoring_gap2025_leading_time_ratio(array $task): float {
+    $raw = $task['leading_time_ratio'] ?? null;
+    $ratio = is_numeric($raw) ? (float)$raw : null;
+    return scoring_gap2025_normalize_leading_time_ratio($ratio, $task);
+}
+
+function scoring_gap2025_leading_time_ratio_percent(array $task): float {
+    return scoring_gap2025_leading_time_ratio($task) * 100.0;
+}
+
+function scoring_gap2025_input_leading_time_ratio($value, array $task = []): float {
+    $percent = scoring_decimal_or_null($value);
+    if ($percent === null) {
+        return scoring_gap2025_default_leading_time_ratio($task);
+    }
+    return scoring_gap2025_normalize_leading_time_ratio($percent / 100.0, $task);
+}
+
+function scoring_gap2025_cylinder_outer_radius_m(array $turnpoint): float {
+    $radius = max(0.0, (float)($turnpoint['radius_m'] ?? 0));
+    return $radius + max(1.0, $radius * 0.001);
+}
+
 function scoring_gate_local_to_utc_sql(string $taskDate, string $time): string {
     $dt = new DateTimeImmutable($taskDate . ' ' . trim($time), scoring_timezone());
     return $dt->setTimezone(scoring_utc_timezone())->format('Y-m-d H:i:s');
@@ -830,6 +883,9 @@ function scoring_ensure_task_active_column(PDO $pdo): void {
     }
     if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'reporting_deadline_at')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN reporting_deadline_at DATETIME DEFAULT NULL AFTER task_deadline_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'leading_time_ratio')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN leading_time_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.1750 AFTER nominal_time_minutes', [1060], ['42S21']);
     }
     if (!scoring_table_index_exists($pdo, 'rankings_scoring_tasks', 'idx_rankings_scoring_tasks_competition_active')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD KEY idx_rankings_scoring_tasks_competition_active (competition_id, active)', [1061], ['42000']);
@@ -4907,8 +4963,7 @@ function scoring_match_task_tracklogs(PDO $pdo, array $task, array $turnpoints):
 }
 
 function scoring_interpolated_cylinder_hit(array $fixes, array $turnpoint, int $cursorTs): ?array {
-    $radiusM = (float)$turnpoint['radius_m'];
-    $previous = null;
+    $radiusM = scoring_gap2025_cylinder_outer_radius_m($turnpoint);
     foreach ($fixes as $fix) {
         if ($fix['ts'] < $cursorTs) {
             continue;
@@ -4920,19 +4975,8 @@ function scoring_interpolated_cylinder_hit(array $fixes, array $turnpoint, int $
             (float)$turnpoint['longitude']
         ) * 1000.0;
         if ($distanceM <= $radiusM) {
-            if ($previous !== null && $previous['distance_m'] > $radiusM && $fix['ts'] > $previous['fix']['ts']) {
-                $denominator = max(0.001, $previous['distance_m'] - $distanceM);
-                $fraction = max(0.0, min(1.0, ($previous['distance_m'] - $radiusM) / $denominator));
-                $hit = $fix;
-                $hit['ts'] = (int)round($previous['fix']['ts'] + (($fix['ts'] - $previous['fix']['ts']) * $fraction));
-                $hit['time_utc'] = gmdate('Y-m-d H:i:s', $hit['ts']);
-                $hit['lat'] = (float)$previous['fix']['lat'] + (((float)$fix['lat'] - (float)$previous['fix']['lat']) * $fraction);
-                $hit['lon'] = (float)$previous['fix']['lon'] + (((float)$fix['lon'] - (float)$previous['fix']['lon']) * $fraction);
-                return $hit;
-            }
             return $fix;
         }
-        $previous = ['fix' => $fix, 'distance_m' => $distanceM];
     }
     return null;
 }
@@ -4940,6 +4984,11 @@ function scoring_interpolated_cylinder_hit(array $fixes, array $turnpoint, int $
 function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, array $fixes): array {
     $windowOpen = strtotime($task['window_open_at'] . ' UTC');
     $windowClose = strtotime($task['window_close_at'] . ' UTC');
+    $taskDeadlineSql = scoring_task_deadline_at($task) ?: ($task['window_close_at'] ?? null);
+    $taskDeadline = $taskDeadlineSql ? strtotime($taskDeadlineSql . ' UTC') : $windowClose;
+    if ($taskDeadline === false) {
+        $taskDeadline = $windowClose;
+    }
     $taskDistance = scoring_task_distance_km($turnpoints);
     $taskDistance = max($taskDistance, (float)$task['minimum_distance_km']);
     $route = array_values($turnpoints);
@@ -4949,10 +4998,23 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
     $essProgress = $cumulative[$essIndex] ?? $taskDistance;
     $speedDistance = max(0.1, $essProgress - $sssProgress);
 
+    $gateTimes = array_values(array_filter(array_map(function ($gate) {
+        $ts = strtotime($gate['gate_time_at'] . ' UTC');
+        return $ts !== false ? $ts : null;
+    }, $gates), static function ($ts) {
+        return $ts !== null;
+    }));
+    sort($gateTimes);
+    $firstGateTs = $gateTimes[0] ?? null;
+    $firstTaskStartTs = $firstGateTs ?? $windowOpen;
+    $initialCursorTs = (($task['task_type'] ?? 'race') === 'race' && $firstGateTs !== null)
+        ? $firstGateTs
+        : $windowOpen;
+
     $filtered = [];
     foreach ($fixes as $fix) {
         $ts = strtotime($fix['time_utc'] . ' UTC');
-        if ($ts >= $windowOpen && $ts <= $windowClose) {
+        if ($ts >= $windowOpen && $ts <= $taskDeadline) {
             $fix['ts'] = $ts;
             $filtered[] = $fix;
         }
@@ -4968,13 +5030,22 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
             'time_seconds' => null,
             'leading_coefficient' => null,
             'turnpoints_reached' => 0,
-            'notes' => ['Geen fixes in taakvenster.'],
+            'last_reached_turnpoint_index' => -1,
+            'next_turnpoint_index' => 0,
+            'closest_distance_to_next_km' => null,
+            'leading_trace' => [],
+            'best_min_to_ess_km' => null,
+            'speed_section_distance_km' => round($speedDistance, 6),
+            'goal_is_ess' => $essIndex === count($turnpoints) - 1,
+            'first_task_start_at' => gmdate('Y-m-d H:i:s', $firstTaskStartTs),
+            'last_flying_time_at' => null,
+            'notes' => ['Geen fixes binnen taakdeadline.'],
         ];
     }
 
     $reached = [];
     $lastReachedIndex = -1;
-    $cursorTs = $windowOpen;
+    $cursorTs = $initialCursorTs;
     foreach ($turnpoints as $idx => $tp) {
         $hit = scoring_interpolated_cylinder_hit($filtered, $tp, $cursorTs);
         if ($hit === null) {
@@ -5026,16 +5097,20 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
     $reachedEss = isset($reached[$essIndex]);
 
     $startTs = null;
+    $sssCrossTs = null;
+    $earlyStartSeconds = null;
     if (isset($reached[$sssIndex])) {
-        $crossTs = $reached[$sssIndex]['ts'];
+        $crossTs = (int)$reached[$sssIndex]['ts'];
+        $sssCrossTs = $crossTs;
         if (($task['task_type'] ?? 'race') === 'race' && !empty($gates)) {
-            $gateTimes = array_map(function ($gate) { return strtotime($gate['gate_time_at'] . ' UTC'); }, $gates);
-            sort($gateTimes);
-            $startTs = $gateTimes[0] ?? $crossTs;
+            $startTs = null;
             foreach ($gateTimes as $gateTs) {
                 if ($gateTs <= $crossTs) {
                     $startTs = $gateTs;
                 }
+            }
+            if ($startTs === null && $firstGateTs !== null) {
+                $earlyStartSeconds = max(0, $firstGateTs - $crossTs);
             }
         } else {
             $startTs = $crossTs;
@@ -5045,31 +5120,41 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
     $goalTs = $reachedGoal ? $reached[count($turnpoints) - 1]['ts'] : null;
     $timeSeconds = ($startTs !== null && $essTs !== null && $essTs >= $startTs) ? ($essTs - $startTs) : null;
 
-    $leadingCoefficient = null;
-    if ($startTs !== null) {
-        $lastTs = $startTs;
+    $leadingTrace = [];
+    $bestMinToEss = null;
+    if ($startTs !== null && $sssCrossTs !== null) {
         $minToEss = $speedDistance;
-        $area = 0.0;
+        $leadingTrace[] = ['ts' => $sssCrossTs, 'min_to_ess_km' => round($minToEss, 6)];
         foreach ($filtered as $fix) {
-            if ($fix['ts'] < $startTs) {
+            if ($fix['ts'] < $sssCrossTs) {
                 continue;
             }
-            if ($essTs !== null && $fix['ts'] > $essTs) {
+            if ($fix['ts'] > $taskDeadline || ($essTs !== null && $fix['ts'] > $essTs)) {
                 break;
             }
             $progress = min($distance, scoring_project_progress_km((float)$fix['lat'], (float)$fix['lon'], $route, $cumulative));
             $progressInSpeed = max(0.0, min($speedDistance, $progress - $sssProgress));
-            $minToEss = min($minToEss, $speedDistance - $progressInSpeed);
-            $dt = max(0, $fix['ts'] - $lastTs);
-            $area += $minToEss * $dt;
-            $lastTs = $fix['ts'];
+            $nextMinToEss = min($minToEss, $speedDistance - $progressInSpeed);
+            if ($nextMinToEss < $minToEss - 0.000001) {
+                $minToEss = $nextMinToEss;
+                $leadingTrace[] = ['ts' => (int)$fix['ts'], 'min_to_ess_km' => round($minToEss, 6)];
+            }
         }
-        $leadingCoefficient = $area / (3600.0 * max(0.1, $speedDistance));
+        if ($essTs !== null && $minToEss > 0.0) {
+            $minToEss = 0.0;
+            $leadingTrace[] = ['ts' => (int)$essTs, 'min_to_ess_km' => 0.0];
+        }
+        $bestMinToEss = $minToEss;
     }
 
     $tsToSql = function ($ts) {
         return $ts ? gmdate('Y-m-d H:i:s', $ts) : null;
     };
+    $lastFiltered = $filtered[count($filtered) - 1];
+    $notes = [];
+    if ($earlyStartSeconds !== null) {
+        $notes[] = 'Vroege start gedetecteerd; automatische Jump-the-Gun-penalty is nog niet toegepast.';
+    }
 
     return [
         'distance_km' => round($distance, 3),
@@ -5079,12 +5164,20 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
         'ess_time_at' => $tsToSql($essTs),
         'goal_time_at' => $tsToSql($goalTs),
         'time_seconds' => $timeSeconds,
-        'leading_coefficient' => $leadingCoefficient,
+        'leading_coefficient' => null,
         'turnpoints_reached' => count($reached),
         'last_reached_turnpoint_index' => $lastReachedIndex,
         'next_turnpoint_index' => $nextTurnpointIndex,
         'closest_distance_to_next_km' => $closestDistanceToNext !== null ? round($closestDistanceToNext, 3) : null,
-        'notes' => [],
+        'sss_time_at' => $tsToSql($sssCrossTs),
+        'first_task_start_at' => $tsToSql($firstTaskStartTs),
+        'last_flying_time_at' => $tsToSql($lastFiltered['ts'] ?? null),
+        'early_start_seconds' => $earlyStartSeconds,
+        'leading_trace' => $leadingTrace,
+        'best_min_to_ess_km' => $bestMinToEss !== null ? round($bestMinToEss, 6) : null,
+        'speed_section_distance_km' => round($speedDistance, 6),
+        'goal_is_ess' => $essIndex === count($turnpoints) - 1,
+        'notes' => $notes,
     ];
 }
 
@@ -5103,6 +5196,10 @@ function scoring_manual_minimum_evaluation(array $task): array {
         'next_turnpoint_index' => 0,
         'closest_distance_to_next_km' => null,
         'manual_minimum_distance' => true,
+        'leading_trace' => [],
+        'best_min_to_ess_km' => null,
+        'speed_section_distance_km' => null,
+        'goal_is_ess' => false,
         'notes' => ['Handmatig minimumafstand zonder tracklog.'],
     ];
 }
@@ -5122,6 +5219,10 @@ function scoring_manual_dnf_evaluation(): array {
         'next_turnpoint_index' => null,
         'closest_distance_to_next_km' => null,
         'result_status' => 'dnf',
+        'leading_trace' => [],
+        'best_min_to_ess_km' => null,
+        'speed_section_distance_km' => null,
+        'goal_is_ess' => false,
         'notes' => ['DNF: piloot is gestart/aangemeld, maar er is geen te scoren vlucht.'],
     ];
 }
@@ -5141,18 +5242,23 @@ function scoring_manual_abs_evaluation(): array {
         'next_turnpoint_index' => null,
         'closest_distance_to_next_km' => null,
         'result_status' => 'abs',
+        'leading_trace' => [],
+        'best_min_to_ess_km' => null,
+        'speed_section_distance_km' => null,
+        'goal_is_ess' => false,
         'notes' => ['ABS: piloot afwezig voor deze taak.'],
     ];
 }
 
 function scoring_enabled_components(array $task): array {
+    $profile = scoring_gap2025_class_profile($task);
     return [
-        'distance' => !empty($task['use_distance_points']),
-        'time' => !empty($task['use_time_points']),
-        'departure' => !empty($task['use_departure_points']),
-        'leading' => !empty($task['use_leading_points']),
-        'arrival_position' => !empty($task['use_arrival_position_points']),
-        'arrival_time' => !empty($task['use_arrival_time_points']),
+        'distance' => true,
+        'time' => true,
+        'departure' => false,
+        'leading' => true,
+        'arrival_position' => (bool)$profile['arrival_points'],
+        'arrival_time' => false,
     ];
 }
 
@@ -5221,17 +5327,166 @@ function scoring_gap_difficulty_fraction(float $distance, array $difficulty): fl
     return $base + (($next - $base) * $fraction);
 }
 
-function scoring_allocate_gap2025_points(array $task, array $evaluations, float $taskDistance): array {
+function scoring_gap2025_clamp01(float $value): float {
+    return max(0.0, min(1.0, $value));
+}
+
+function scoring_gap2025_launch_validity(int $pilotsFlying, int $pilotsPresent): array {
+    $nominalLaunch = 0.96;
+    if ($pilotsPresent <= 0) {
+        return ['lvr' => 0.0, 'validity' => 0.0, 'nominal_launch' => $nominalLaunch];
+    }
+    $lvr = min(1.0, $pilotsFlying / max(0.000001, $pilotsPresent * $nominalLaunch));
+    $validity = scoring_gap2025_clamp01((0.028 * $lvr) + (2.917 * $lvr * $lvr) - (1.944 * $lvr * $lvr * $lvr));
+    return ['lvr' => $lvr, 'validity' => $validity, 'nominal_launch' => $nominalLaunch];
+}
+
+function scoring_gap2025_distance_validity(float $sumOverMinimum, int $pilotsFlying, float $minDistance, float $nominalDistance, float $bestDistance): array {
+    $nominalGoal = 0.30;
+    if ($pilotsFlying <= 0) {
+        return ['dvr' => 0.0, 'validity' => 0.0, 'nominal_goal' => $nominalGoal, 'nominal_distance_area' => 0.0];
+    }
+    $nominalDistanceArea = (
+        (($nominalGoal + 1.0) * max(0.0, $nominalDistance - $minDistance))
+        + max(0.0, $nominalGoal * ($bestDistance - $nominalDistance))
+    ) / 2.0;
+    $dvr = $sumOverMinimum / max(0.000001, $pilotsFlying * $nominalDistanceArea);
+    return [
+        'dvr' => $dvr,
+        'validity' => min(1.0, $dvr),
+        'nominal_goal' => $nominalGoal,
+        'nominal_distance_area' => $nominalDistanceArea,
+    ];
+}
+
+function scoring_gap2025_time_validity(?float $bestTimeHours, float $bestDistance, float $nominalDistance, float $nominalTimeHours): array {
+    $tvr = $bestTimeHours !== null
+        ? min(1.0, $bestTimeHours / max(0.000001, $nominalTimeHours))
+        : min(1.0, $bestDistance / max(0.000001, $nominalDistance));
+    $validity = scoring_gap2025_clamp01((-0.271) + (2.912 * $tvr) - (2.098 * $tvr * $tvr) + (0.457 * $tvr * $tvr * $tvr));
+    return ['tvr' => $tvr, 'validity' => $validity];
+}
+
+function scoring_gap2025_speed_fraction(float $timeHours, float $bestTimeHours): float {
+    if ($bestTimeHours <= 0.0 || $timeHours < $bestTimeHours) {
+        return 1.0;
+    }
+    $relative = max(0.0, ($timeHours - $bestTimeHours) / sqrt($bestTimeHours));
+    return max(0.0, 1.0 - pow($relative, 5.0 / 6.0));
+}
+
+function scoring_gap2025_leading_factor(float $leadingCoefficient, float $bestLeadingCoefficient): float {
+    if ($bestLeadingCoefficient <= 0.0 || $leadingCoefficient <= $bestLeadingCoefficient) {
+        return 1.0;
+    }
+    $relative = (($leadingCoefficient - $bestLeadingCoefficient) * ($leadingCoefficient - $bestLeadingCoefficient))
+        / max(0.000001, $bestLeadingCoefficient);
+    return max(0.0, 1.0 - pow($relative, 1.0 / 3.0));
+}
+
+function scoring_gap2025_first_task_start_ts(array $task, array $evaluations): int {
+    $first = null;
+    foreach ($evaluations as $entry) {
+        $sql = (string)($entry['evaluation']['first_task_start_at'] ?? '');
+        if ($sql === '') {
+            continue;
+        }
+        $ts = strtotime($sql . ' UTC');
+        if ($ts !== false) {
+            $first = $first === null ? $ts : min($first, $ts);
+        }
+    }
+    if ($first !== null) {
+        return $first;
+    }
+    $fallback = strtotime(($task['window_open_at'] ?? 'now') . ' UTC');
+    return $fallback !== false ? $fallback : time();
+}
+
+function scoring_gap2025_max_lc_time_seconds(array $task, array $evaluations, int $firstTaskStartTs): int {
+    $taskDeadlineSql = scoring_task_deadline_at($task) ?: ($task['window_close_at'] ?? null);
+    $taskDeadlineTs = $taskDeadlineSql ? strtotime($taskDeadlineSql . ' UTC') : false;
+    $lastEssTs = null;
+    $lastOutlandingTs = null;
+    foreach ($evaluations as $entry) {
+        $ev = $entry['evaluation'];
+        if (!empty($ev['reached_ess']) && !empty($ev['ess_time_at'])) {
+            $ts = strtotime($ev['ess_time_at'] . ' UTC');
+            if ($ts !== false) {
+                $lastEssTs = $lastEssTs === null ? $ts : max($lastEssTs, $ts);
+            }
+            continue;
+        }
+        if (!empty($ev['last_flying_time_at'])) {
+            $ts = strtotime($ev['last_flying_time_at'] . ' UTC');
+            if ($ts !== false) {
+                $lastOutlandingTs = $lastOutlandingTs === null ? $ts : max($lastOutlandingTs, $ts);
+            }
+        }
+    }
+    $maxTs = max($lastEssTs ?? $firstTaskStartTs, $lastOutlandingTs ?? $firstTaskStartTs);
+    if ($taskDeadlineTs !== false) {
+        $maxTs = min($maxTs, $taskDeadlineTs);
+    }
+    return max(0, $maxTs - $firstTaskStartTs);
+}
+
+function scoring_gap2025_leading_coefficient_from_evaluation(array $evaluation, int $firstTaskStartTs, int $maxTimeSeconds, float $speedDistance): ?float {
+    $trace = $evaluation['leading_trace'] ?? [];
+    if (!is_array($trace) || empty($trace) || $speedDistance <= 0.0) {
+        return null;
+    }
+
+    $previousMin = $speedDistance;
+    $leadingArea = 0.0;
+    foreach ($trace as $event) {
+        if (!is_array($event) || !isset($event['ts'], $event['min_to_ess_km'])) {
+            continue;
+        }
+        $minToEss = max(0.0, min($speedDistance, (float)$event['min_to_ess_km']));
+        if ($minToEss >= $previousMin - 0.000001) {
+            continue;
+        }
+        $taskTime = max(0, ((int)$event['ts']) - $firstTaskStartTs);
+        $leadingArea += (($previousMin * $previousMin) - ($minToEss * $minToEss)) * $taskTime;
+        $previousMin = $minToEss;
+    }
+
+    $bestMinToEss = isset($evaluation['best_min_to_ess_km'])
+        ? max(0.0, min($speedDistance, (float)$evaluation['best_min_to_ess_km']))
+        : $previousMin;
+    $missingArea = max(0, $maxTimeSeconds) * $bestMinToEss * $bestMinToEss;
+    return ($leadingArea + $missingArea) / (1800.0 * $speedDistance * $speedDistance);
+}
+
+function scoring_allocate_gap2025_points(array $task, array $evaluations, float $taskDistance, ?int $pilotsPresent = null): array {
     $included = array_values($evaluations);
     $count = count($included);
+    $pilotsPresent = $pilotsPresent ?? $count;
     $minDistance = (float)$task['minimum_distance_km'];
     $nominalDistance = max($minDistance + 0.1, (float)$task['nominal_distance_km']);
     $nominalTimeHours = max(0.1, ((int)$task['nominal_time_minutes']) / 60.0);
     $bestDistance = 0.0;
     $sumOverMinimum = 0.0;
     $goalCount = 0;
+    $essCount = 0;
     $bestTimeHours = null;
     $bestLeading = null;
+    $firstTaskStartTs = scoring_gap2025_first_task_start_ts($task, $included);
+    $maxLcTimeSeconds = scoring_gap2025_max_lc_time_seconds($task, $included, $firstTaskStartTs);
+    $speedDistance = 0.0;
+
+    foreach ($included as $entry) {
+        $speedDistance = max($speedDistance, (float)($entry['evaluation']['speed_section_distance_km'] ?? 0.0));
+    }
+    if ($speedDistance <= 0.0) {
+        $speedDistance = max(0.1, $taskDistance);
+    }
+
+    foreach ($included as $idx => $entry) {
+        $lc = scoring_gap2025_leading_coefficient_from_evaluation($entry['evaluation'], $firstTaskStartTs, $maxLcTimeSeconds, $speedDistance);
+        $included[$idx]['evaluation']['leading_coefficient'] = $lc;
+    }
 
     foreach ($included as $entry) {
         $distance = (float)$entry['evaluation']['distance_km'];
@@ -5240,7 +5495,10 @@ function scoring_allocate_gap2025_points(array $task, array $evaluations, float 
         if (!empty($entry['evaluation']['reached_goal'])) {
             $goalCount++;
         }
-        if (!empty($entry['evaluation']['reached_goal']) && $entry['evaluation']['time_seconds']) {
+        if (!empty($entry['evaluation']['reached_ess'])) {
+            $essCount++;
+        }
+        if (!empty($entry['evaluation']['reached_ess']) && $entry['evaluation']['time_seconds']) {
             $hours = $entry['evaluation']['time_seconds'] / 3600.0;
             $bestTimeHours = $bestTimeHours === null ? $hours : min($bestTimeHours, $hours);
         }
@@ -5250,80 +5508,67 @@ function scoring_allocate_gap2025_points(array $task, array $evaluations, float 
         }
     }
 
-    $distanceValidity = $count > 0
-        ? min(1.0, max(
-            $bestDistance / $nominalDistance,
-            $sumOverMinimum / max(0.1, $count * ($nominalDistance - $minDistance))
-        ))
-        : 0.0;
-    $timeValidity = $bestTimeHours !== null
-        ? min(1.0, $bestTimeHours / $nominalTimeHours)
-        : min(1.0, $bestDistance / $nominalDistance);
-    $taskValidity = min(1.0, max(0.0, $distanceValidity * max(0.25, $timeValidity)));
+    $launchValidityData = scoring_gap2025_launch_validity($count, $pilotsPresent);
+    $distanceValidityData = scoring_gap2025_distance_validity($sumOverMinimum, $count, $minDistance, $nominalDistance, $bestDistance);
+    $timeValidityData = scoring_gap2025_time_validity($bestTimeHours, $bestDistance, $nominalDistance, $nominalTimeHours);
+    $launchValidity = $launchValidityData['validity'];
+    $distanceValidity = $distanceValidityData['validity'];
+    $timeValidity = $timeValidityData['validity'];
+    $taskValidity = scoring_gap2025_clamp01($launchValidity * $distanceValidity * $timeValidity);
     $goalRatio = $count > 0 ? $goalCount / $count : 0.0;
 
     $components = scoring_enabled_components($task);
-    $arrivalEnabled = $components['arrival_position'] || $components['arrival_time'];
-    $baseDistanceWeight = max(0.25, min(0.9, 0.9 - (1.665 * $goalRatio) + (1.713 * $goalRatio * $goalRatio) - (0.587 * $goalRatio * $goalRatio * $goalRatio)));
-    $distanceWeight = $components['distance'] ? $baseDistanceWeight : 0.0;
+    $arrivalEnabled = (bool)$components['arrival_position'];
+    $distanceWeight = scoring_gap2025_clamp01(0.9 - (1.665 * $goalRatio) + (1.713 * $goalRatio * $goalRatio) - (0.587 * $goalRatio * $goalRatio * $goalRatio));
     $remainingWeight = max(0.0, 1.0 - $distanceWeight);
-    $leadingTimeRatio = 0.175; // GAP2025 default for hang gliding.
+    $leadingTimeRatio = scoring_gap2025_leading_time_ratio($task);
     $arrivalRatio = 0.125;
 
     $leadingWeight = 0.0;
     $arrivalWeight = 0.0;
     $timeWeight = 0.0;
     if ($goalCount > 0) {
-        $leadingWeight = $components['leading'] ? $remainingWeight * $leadingTimeRatio : 0.0;
+        $leadingWeight = $remainingWeight * $leadingTimeRatio;
         $arrivalWeight = $arrivalEnabled ? $remainingWeight * $arrivalRatio : 0.0;
-        $timeWeight = $components['time'] ? max(0.0, $remainingWeight - $leadingWeight - $arrivalWeight) : 0.0;
+        $timeWeight = max(0.0, $remainingWeight - $leadingWeight - $arrivalWeight);
     } else {
-        $leadingWeight = $components['leading'] ? $remainingWeight : 0.0;
-    }
-
-    $weightSum = $distanceWeight + $timeWeight + $leadingWeight + $arrivalWeight;
-    $leftoverWeight = max(0.0, 1.0 - $weightSum);
-    if ($leftoverWeight > 0.000001) {
-        if ($components['time'] && $goalCount > 0) {
-            $timeWeight += $leftoverWeight;
-        } elseif ($components['distance']) {
-            $distanceWeight += $leftoverWeight;
-        } elseif ($components['leading']) {
-            $leadingWeight += $leftoverWeight;
-        } elseif ($arrivalEnabled) {
-            $arrivalWeight += $leftoverWeight;
-        }
+        $leadingWeight = $remainingWeight;
     }
 
     $available = [
-        'distance' => 1000.0 * $taskValidity * $distanceWeight,
-        'time' => 1000.0 * $taskValidity * $timeWeight,
-        'leading' => 1000.0 * $taskValidity * $leadingWeight,
-        'arrival' => 1000.0 * $taskValidity * $arrivalWeight,
+        'distance' => round(1000.0 * $taskValidity * $distanceWeight, 0),
+        'time' => round(1000.0 * $taskValidity * $timeWeight, 0),
+        'leading' => round(1000.0 * $taskValidity * $leadingWeight, 0),
+        'arrival' => round(1000.0 * $taskValidity * $arrivalWeight, 0),
     ];
 
-    $goalOrder = $included;
-    usort($goalOrder, function ($a, $b) {
-        $aGoal = !empty($a['evaluation']['reached_goal']);
-        $bGoal = !empty($b['evaluation']['reached_goal']);
-        if ($aGoal !== $bGoal) {
-            return $aGoal ? -1 : 1;
+    $arrivalOrder = $included;
+    usort($arrivalOrder, function ($a, $b) {
+        $aEss = !empty($a['evaluation']['reached_ess']);
+        $bEss = !empty($b['evaluation']['reached_ess']);
+        if ($aEss !== $bEss) {
+            return $aEss ? -1 : 1;
         }
-        return (($a['evaluation']['goal_time_at'] ?? '') <=> ($b['evaluation']['goal_time_at'] ?? ''));
+        return (($a['evaluation']['ess_time_at'] ?? '') <=> ($b['evaluation']['ess_time_at'] ?? ''));
     });
-    $goalRanks = [];
+    $arrivalRanks = [];
     $rank = 1;
-    foreach ($goalOrder as $entry) {
-        if (!empty($entry['evaluation']['reached_goal'])) {
-            $goalRanks[$entry['flight']['id']] = $rank++;
+    foreach ($arrivalOrder as $entry) {
+        if (!empty($entry['evaluation']['reached_ess'])) {
+            $arrivalRanks[$entry['flight']['id']] = $rank++;
         }
     }
 
-    $difficulty = scoring_gap_distance_difficulty($included, $minDistance, $bestDistance);
+    $profile = scoring_gap2025_class_profile($task);
+    $difficulty = $profile['discipline'] === 'hang_gliding'
+        ? scoring_gap_distance_difficulty($included, $minDistance, $bestDistance)
+        : ['enabled' => false, 'scores' => []];
     $scored = [];
+    $updatedEvaluations = [];
     foreach ($included as $entry) {
         $flightId = (int)$entry['flight']['id'];
         $ev = $entry['evaluation'];
+        $updatedEvaluations[$flightId] = $ev;
         $distance = min($taskDistance, max($minDistance, (float)$ev['distance_km']));
         if (!empty($difficulty['enabled'])) {
             $distanceFraction = min(1.0, ($bestDistance > 0.0 ? $distance / (2.0 * $bestDistance) : 0.0) + scoring_gap_difficulty_fraction($distance, $difficulty));
@@ -5332,65 +5577,81 @@ function scoring_allocate_gap2025_points(array $task, array $evaluations, float 
         }
         $distancePoints = $available['distance'] * $distanceFraction;
         $timePoints = 0.0;
-        if ($bestTimeHours !== null && !empty($ev['reached_goal']) && $ev['time_seconds']) {
+        if ($bestTimeHours !== null && !empty($ev['reached_ess']) && $ev['time_seconds']) {
             $hours = $ev['time_seconds'] / 3600.0;
-            $zeroAt = $bestTimeHours + sqrt($bestTimeHours);
-            $fraction = $hours >= $zeroAt
-                ? 0.0
-                : max(0.0, 1.0 - pow(max(0.0, ($hours - $bestTimeHours) / max(0.001, $zeroAt - $bestTimeHours)), 5.0 / 6.0));
-            $timePoints = $available['time'] * $fraction;
+            $timePoints = $available['time'] * scoring_gap2025_speed_fraction($hours, $bestTimeHours);
         }
         $leadingPoints = 0.0;
         if ($bestLeading !== null && $ev['leading_coefficient'] !== null) {
             $lc = (float)$ev['leading_coefficient'];
-            $fraction = $lc <= $bestLeading
-                ? 1.0
-                : max(0.0, 1.0 - sqrt(max(0.0, ($lc - $bestLeading) / max(0.001, $bestLeading))));
-            $leadingPoints = $available['leading'] * $fraction;
+            $leadingPoints = $available['leading'] * scoring_gap2025_leading_factor($lc, $bestLeading);
         }
         $arrivalPositionPoints = 0.0;
         $arrivalTimePoints = 0.0;
-        if (!empty($ev['reached_goal']) && isset($goalRanks[$flightId]) && $available['arrival'] > 0.0) {
-            $goalRank = $goalRanks[$flightId];
-            $arrivalFraction = $goalCount > 1 ? max(0.0, 1.0 - (($goalRank - 1) / max(1, $goalCount - 1))) : 1.0;
+        if (!empty($ev['reached_ess']) && isset($arrivalRanks[$flightId]) && $available['arrival'] > 0.0) {
+            $arrivalRank = $arrivalRanks[$flightId];
+            $arrivalFraction = $essCount > 1 ? max(0.0, 1.0 - (($arrivalRank - 1) / max(1, $essCount - 1))) : 1.0;
             $arrivalCurve = 0.2 + (0.037 * $arrivalFraction) + (0.13 * $arrivalFraction * $arrivalFraction) + (0.633 * $arrivalFraction * $arrivalFraction * $arrivalFraction);
-            if ($components['arrival_position'] && $components['arrival_time']) {
-                $arrivalPositionPoints = $available['arrival'] * 0.5 * $arrivalCurve;
-                $arrivalTimePoints = $available['arrival'] * 0.5 * $arrivalCurve;
-            } elseif ($components['arrival_position']) {
+            if ($components['arrival_position']) {
                 $arrivalPositionPoints = $available['arrival'] * $arrivalCurve;
-            } elseif ($components['arrival_time']) {
-                $arrivalTimePoints = $available['arrival'] * $arrivalCurve;
             }
         }
 
         $departurePoints = 0.0;
-        $total = $distancePoints + $timePoints + $leadingPoints + $arrivalPositionPoints + $arrivalTimePoints + $departurePoints;
+        if (!empty($ev['reached_ess']) && empty($ev['reached_goal']) && empty($ev['goal_is_ess'])) {
+            $essNoGoalFactor = $profile['discipline'] === 'paragliding' ? 0.0 : 0.8;
+            $timePoints *= $essNoGoalFactor;
+            $arrivalPositionPoints *= $essNoGoalFactor;
+            $arrivalTimePoints *= $essNoGoalFactor;
+        }
+
+        $distancePoints = round($distancePoints, 1);
+        $timePoints = round($timePoints, 1);
+        $departurePoints = round($departurePoints, 1);
+        $leadingPoints = round($leadingPoints, 1);
+        $arrivalPositionPoints = round($arrivalPositionPoints, 1);
+        $arrivalTimePoints = round($arrivalTimePoints, 1);
+        $total = round($distancePoints + $timePoints + $leadingPoints + $arrivalPositionPoints + $arrivalTimePoints + $departurePoints, 1);
         $scored[$flightId] = [
-            'distance_points' => round($distancePoints, 1),
-            'time_points' => round($timePoints, 1),
-            'departure_points' => round($departurePoints, 1),
-            'leading_points' => round($leadingPoints, 1),
-            'arrival_position_points' => round($arrivalPositionPoints, 1),
-            'arrival_time_points' => round($arrivalTimePoints, 1),
-            'total_points' => round($total, 1),
+            'distance_points' => $distancePoints,
+            'time_points' => $timePoints,
+            'departure_points' => $departurePoints,
+            'leading_points' => $leadingPoints,
+            'arrival_position_points' => $arrivalPositionPoints,
+            'arrival_time_points' => $arrivalTimePoints,
+            'total_points' => $total,
         ];
     }
 
     return [
         'points' => $scored,
+        'evaluations' => $updatedEvaluations,
         'summary' => [
             'formula_version' => 'GAP2025',
-            'implementation_note' => '',
+            'implementation_note' => 'CIVL GAP 2025 core task validity, allocation, speed, leading and arrival formulas. Cylinder-only tasks; stopped tasks, lines, and automatic early-start penalties require separate task support.',
+            'pilots_present' => $pilotsPresent,
+            'pilots_flying' => $count,
             'pilots_scored' => $count,
             'pilots_in_goal' => $goalCount,
+            'pilots_at_ess' => $essCount,
             'task_distance_km' => round($taskDistance, 3),
             'best_distance_km' => round($bestDistance, 3),
             'best_time_seconds' => $bestTimeHours !== null ? (int)round($bestTimeHours * 3600) : null,
+            'best_leading_coefficient' => $bestLeading !== null ? round($bestLeading, 6) : null,
+            'launch_validity' => round($launchValidity, 4),
             'distance_validity' => round($distanceValidity, 4),
             'time_validity' => round($timeValidity, 4),
             'task_validity' => round($taskValidity, 4),
+            'launch_validity_ratio' => round($launchValidityData['lvr'], 4),
+            'distance_validity_ratio' => round($distanceValidityData['dvr'], 4),
+            'time_validity_ratio' => round($timeValidityData['tvr'], 4),
+            'nominal_launch' => $launchValidityData['nominal_launch'],
+            'nominal_goal' => $distanceValidityData['nominal_goal'],
+            'nominal_distance_area' => round($distanceValidityData['nominal_distance_area'], 4),
             'goal_ratio' => round($goalRatio, 4),
+            'leading_time_ratio' => round($leadingTimeRatio, 4),
+            'first_task_start_at' => gmdate('Y-m-d H:i:s', $firstTaskStartTs),
+            'max_lc_time_seconds' => $maxLcTimeSeconds,
             'point_weights' => [
                 'distance' => round($distanceWeight, 4),
                 'time' => round($timeWeight, 4),
@@ -5475,28 +5736,47 @@ function scoring_score_task(PDO $pdo, int $taskId): array {
         throw new RuntimeException('Geen te scoren tracklogs gevonden voor dit taakvenster en gebied.');
     }
 
+    $pilotsPresent = count($included) + count($dnfFlights);
     $allocation = !empty($included)
-        ? scoring_allocate_gap2025_points($task, $included, $taskDistance)
+        ? scoring_allocate_gap2025_points($task, $included, $taskDistance, $pilotsPresent)
         : [
             'points' => [],
+            'evaluations' => [],
             'summary' => [
                 'formula_version' => 'GAP2025',
-                'implementation_note' => '',
+                'implementation_note' => 'Geen vliegende piloten; task validity is 0.',
+                'pilots_present' => $pilotsPresent,
+                'pilots_flying' => 0,
                 'pilots_scored' => 0,
                 'pilots_in_goal' => 0,
+                'pilots_at_ess' => 0,
                 'pilots_dnf' => 0,
                 'task_distance_km' => round($taskDistance, 3),
                 'best_distance_km' => 0.0,
                 'best_time_seconds' => null,
+                'best_leading_coefficient' => null,
+                'launch_validity' => 0.0,
                 'distance_validity' => 0.0,
                 'time_validity' => 0.0,
                 'task_validity' => 0.0,
+                'launch_validity_ratio' => 0.0,
+                'distance_validity_ratio' => 0.0,
+                'time_validity_ratio' => 0.0,
+                'nominal_launch' => 0.96,
+                'nominal_goal' => 0.30,
+                'nominal_distance_area' => 0.0,
                 'goal_ratio' => 0.0,
+                'leading_time_ratio' => scoring_gap2025_leading_time_ratio($task),
+                'first_task_start_at' => null,
+                'max_lc_time_seconds' => 0,
                 'point_weights' => ['distance' => 0.0, 'time' => 0.0, 'leading' => 0.0, 'arrival' => 0.0],
                 'available_points' => ['distance' => 0.0, 'time' => 0.0, 'leading' => 0.0, 'arrival' => 0.0],
                 'enabled_components' => scoring_enabled_components($task),
             ],
         ];
+    foreach (($allocation['evaluations'] ?? []) as $flightId => $evaluation) {
+        $evaluationsByFlight[(int)$flightId] = $evaluation;
+    }
     $rankRows = [];
     foreach ($included as $entry) {
         $flightId = (int)$entry['flight']['id'];
