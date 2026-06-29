@@ -101,9 +101,11 @@ $taskTabByAction = [
     'update_turnpoints' => 'settings',
     'match_tracks' => 'review',
     'collect_flymaster' => 'review',
+    'collect_skytraxx' => 'review',
     'add_manual_flight' => 'review',
     'save_review' => 'review',
     'score_task' => 'scoring',
+    'save_adjustments' => 'scoring',
     'publish_task' => 'scoring',
     'unpublish_task' => 'scoring',
 ];
@@ -143,6 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      SET name = ?, task_date = ?, window_open_at = ?, window_close_at = ?,
                          task_deadline_at = ?, reporting_deadline_at = ?, task_type = ?,
                          minimum_distance_km = ?, nominal_distance_km = ?, nominal_time_minutes = ?, leading_time_ratio = ?,
+                         jump_the_gun_enabled = ?, jump_the_gun_seconds_per_point = ?, jump_the_gun_max_seconds = ?,
                          use_distance_points = ?, use_time_points = ?, use_departure_points = ?, use_leading_points = ?,
                          use_arrival_position_points = ?, use_arrival_time_points = ?
                      WHERE id = ?'
@@ -159,6 +162,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     scoring_decimal_or_null($_POST['nominal_distance_km'] ?? '') ?? 50.0,
                     max(1, (int)($_POST['nominal_time_minutes'] ?? 90)),
                     scoring_gap2025_input_leading_time_ratio($_POST['leading_time_ratio_percent'] ?? null, $task),
+                    isset($_POST['jump_the_gun_enabled']) ? 1 : 0,
+                    scoring_gap2025_input_jump_seconds_per_point($_POST['jump_the_gun_seconds_per_point'] ?? null),
+                    scoring_gap2025_input_jump_max_seconds($_POST['jump_the_gun_max_seconds'] ?? null),
                     isset($_POST['use_distance_points']) ? 1 : 0,
                     isset($_POST['use_time_points']) ? 1 : 0,
                     isset($_POST['use_departure_points']) ? 1 : 0,
@@ -183,8 +189,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($action === 'add_turnpoint') {
                 $waypointId = (int)($_POST['waypoint_id'] ?? 0);
                 $radius = max(1, (int)($_POST['radius_m'] ?? 400));
+                $zoneType = scoring_gap2025_input_zone_type($_POST['control_zone_type'] ?? 'cylinder');
+                $lineOrientation = scoring_gap2025_input_line_orientation_deg($_POST['line_orientation_deg'] ?? null);
+                $lineOffset = scoring_gap2025_input_line_offset_km($_POST['line_offset_km'] ?? null);
+                $lineHalfLength = scoring_gap2025_input_line_half_length_km($_POST['line_half_length_km'] ?? null);
+                $goalLineLength = scoring_gap2025_input_goal_line_length_m($_POST['goal_line_length_m'] ?? null);
                 if ($waypointId <= 0) {
                     throw new RuntimeException('Selecteer een waypoint.');
+                }
+                if ($zoneType === 'line' && $lineOrientation === null) {
+                    throw new RuntimeException('Vul een orientatie in voor een lijn-control zone.');
                 }
                 $stmt = $pdo->prepare('SELECT COUNT(*) FROM rankings_scoring_waypoints WHERE id = ? AND competition_id = ?');
                 $stmt->execute([$waypointId, (int)$task['competition_id']]);
@@ -196,9 +210,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sequence = (int)$stmt->fetchColumn();
                 $pdo->prepare(
                     'INSERT INTO rankings_scoring_task_turnpoints
-                     (task_id, waypoint_id, sequence_no, radius_m, is_speed_section_start, is_speed_section_end)
-                     VALUES (?, ?, ?, ?, ?, ?)'
-                )->execute([$taskId, $waypointId, $sequence, $radius, 0, 0]);
+                     (task_id, waypoint_id, sequence_no, radius_m, control_zone_type, line_orientation_deg, line_offset_km, line_half_length_km, goal_line_length_m, is_speed_section_start, is_speed_section_end)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                )->execute([$taskId, $waypointId, $sequence, $radius, $zoneType, $lineOrientation, $lineOffset, $lineHalfLength, $goalLineLength, 0, 0]);
                 $notice = 'Taakpunt toegevoegd.';
             } elseif ($action === 'delete_turnpoint') {
                 $turnpointId = (int)($_POST['turnpoint_id'] ?? 0);
@@ -223,18 +237,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $notice = 'Taakpunt verwijderd.';
                 } else {
                     $radii = isset($_POST['radius']) && is_array($_POST['radius']) ? $_POST['radius'] : [];
+                    $zoneTypes = isset($_POST['control_zone_type']) && is_array($_POST['control_zone_type']) ? $_POST['control_zone_type'] : [];
+                    $lineOrientations = isset($_POST['line_orientation_deg']) && is_array($_POST['line_orientation_deg']) ? $_POST['line_orientation_deg'] : [];
+                    $lineOffsets = isset($_POST['line_offset_km']) && is_array($_POST['line_offset_km']) ? $_POST['line_offset_km'] : [];
+                    $lineHalfLengths = isset($_POST['line_half_length_km']) && is_array($_POST['line_half_length_km']) ? $_POST['line_half_length_km'] : [];
+                    $goalLineLengths = isset($_POST['goal_line_length_m']) && is_array($_POST['goal_line_length_m']) ? $_POST['goal_line_length_m'] : [];
                     $sssId = (int)($_POST['sss_turnpoint_id'] ?? 0);
                     $essId = (int)($_POST['ess_turnpoint_id'] ?? 0);
                     $rows = scoring_load_task_turnpoints($pdo, $taskId);
                     $upd = $pdo->prepare(
                         'UPDATE rankings_scoring_task_turnpoints
-                         SET radius_m = ?, is_speed_section_start = ?, is_speed_section_end = ?
+                         SET radius_m = ?, control_zone_type = ?, line_orientation_deg = ?, line_offset_km = ?, line_half_length_km = ?, goal_line_length_m = ?, is_speed_section_start = ?, is_speed_section_end = ?
                          WHERE id = ? AND task_id = ?'
                     );
                     foreach ($rows as $row) {
                         $id = (int)$row['id'];
                         $radius = max(1, (int)($radii[$id] ?? $row['radius_m']));
-                        $upd->execute([$radius, $id === $sssId ? 1 : 0, $id === $essId ? 1 : 0, $id, $taskId]);
+                        $zoneType = scoring_gap2025_input_zone_type($zoneTypes[$id] ?? ($row['control_zone_type'] ?? 'cylinder'));
+                        $lineOrientation = scoring_gap2025_input_line_orientation_deg($lineOrientations[$id] ?? ($row['line_orientation_deg'] ?? null));
+                        $lineOffset = scoring_gap2025_input_line_offset_km($lineOffsets[$id] ?? ($row['line_offset_km'] ?? null));
+                        $lineHalfLength = scoring_gap2025_input_line_half_length_km($lineHalfLengths[$id] ?? ($row['line_half_length_km'] ?? null));
+                        $goalLineLength = scoring_gap2025_input_goal_line_length_m($goalLineLengths[$id] ?? ($row['goal_line_length_m'] ?? null));
+                        if ($zoneType === 'line' && $lineOrientation === null) {
+                            throw new RuntimeException('Vul een orientatie in voor lijn-control zone ' . (string)($row['name'] ?? $id) . '.');
+                        }
+                        $upd->execute([$radius, $zoneType, $lineOrientation, $lineOffset, $lineHalfLength, $goalLineLength, $id === $sssId ? 1 : 0, $id === $essId ? 1 : 0, $id, $taskId]);
                     }
                     $notice = 'Taakpunten bijgewerkt.';
                 }
@@ -271,6 +298,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         } elseif (preg_match('/Connection timed out|Connection refused|php_network_getaddresses|Could not resolve host/i', $messageText)) {
                             $notice .= ' Controleer of de server uitgaand HTTPS-verkeer naar lb.flymaster.net toestaat.';
                         }
+                    }
+                }
+            } elseif ($action === 'collect_skytraxx') {
+                $turnpoints = scoring_load_task_turnpoints($pdo, $taskId);
+                $task = scoring_load_task($pdo, $taskId);
+                $summary = scoring_import_burnair_skytraxx_for_task($pdo, $task, $turnpoints);
+                $matchedUploads = scoring_match_task_tracklogs($pdo, $task, $turnpoints);
+                $notice = 'Skytraxx/Burnair gecontroleerd: '
+                    . (int)$summary['profiles_checked'] . ' profiel(en), '
+                    . (int)$summary['direct_downloads_checked'] . ' directe IGC-download(s), '
+                    . (int)$summary['direct_matches'] . ' directe match(es), '
+                    . (int)$summary['replay_tracks_checked'] . ' live-track(s), '
+                    . (int)$summary['replay_matches'] . ' live-match(es), '
+                    . (int)$summary['candidates'] . ' kandidaat/kandidaten, '
+                    . (int)$summary['imported'] . ' nieuw opgehaald.';
+                $notice .= ' Uploads gecontroleerd: ' . (int)$matchedUploads . ' kandidaat/kandidaten gekoppeld.';
+                if ((int)$summary['already_linked'] > 0) {
+                    $notice .= ' ' . (int)$summary['already_linked'] . ' bestaande kandidaat/kandidaten gekoppeld.';
+                }
+                if (empty($summary['direct_igc_configured'])) {
+                    $notice .= ' Directe Burnair IGC-download is niet geconfigureerd.';
+                }
+                if (empty($summary['public_livetracking_enabled'])) {
+                    $notice .= ' Live-track reconstructie staat uit; zet dit alleen aan met Burnair-toestemming.';
+                }
+                if ((int)$summary['errors'] > 0 || !empty($summary['messages'])) {
+                    if ((int)$summary['errors'] > 0) {
+                        $notice .= ' ' . (int)$summary['errors'] . ' fout(en).';
+                    } else {
+                        $notice .= ' Meldingen.';
+                    }
+                    $messages = array_values(array_unique(array_filter(array_map('strval', $summary['messages'] ?? []))));
+                    if (!empty($messages)) {
+                        $notice .= ' Details: ' . implode(' | ', array_slice($messages, 0, 3));
                     }
                 }
             } elseif ($action === 'add_manual_flight') {
@@ -487,6 +548,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $notice .= ', ' . (int)$summary['pilots_dnf'] . ' DNF';
                 }
                 $notice .= ', taakvaliditeit ' . app_format_compact_number($summary['task_validity'] * 100, 1) . '%.';
+                if ($task['status'] === 'published') {
+                    $notice .= ' De publicatie blijft ongewijzigd tot je Publicatie bijwerken kiest.';
+                }
+            } elseif ($action === 'save_adjustments') {
+                scoring_ensure_task_review_columns($pdo);
+                $manualPenalties = isset($_POST['manual_penalty_points']) && is_array($_POST['manual_penalty_points']) ? $_POST['manual_penalty_points'] : [];
+                $manualBonuses = isset($_POST['manual_bonus_points']) && is_array($_POST['manual_bonus_points']) ? $_POST['manual_bonus_points'] : [];
+                $reasons = isset($_POST['adjustment_reason']) && is_array($_POST['adjustment_reason']) ? $_POST['adjustment_reason'] : [];
+                $ids = array_unique(array_map('intval', array_merge(array_keys($manualPenalties), array_keys($manualBonuses), array_keys($reasons))));
+                $upd = $pdo->prepare('UPDATE rankings_scoring_task_flights SET manual_penalty_points = ?, manual_bonus_points = ?, adjustment_reason = ? WHERE id = ? AND task_id = ?');
+                foreach ($ids as $flightId) {
+                    if ($flightId <= 0) {
+                        continue;
+                    }
+                    $penalty = max(0.0, scoring_decimal_or_null($manualPenalties[$flightId] ?? '') ?? 0.0);
+                    $bonus = max(0.0, scoring_decimal_or_null($manualBonuses[$flightId] ?? '') ?? 0.0);
+                    $reason = trim((string)($reasons[$flightId] ?? ''));
+                    $reason = $reason !== ''
+                        ? (function_exists('mb_substr') ? mb_substr($reason, 0, 255, 'UTF-8') : substr($reason, 0, 255))
+                        : null;
+                    $upd->execute([$penalty, $bonus, $reason, $flightId, $taskId]);
+                }
+                $summary = scoring_score_task($pdo, $taskId);
+                $notice = 'Correcties opgeslagen en taak opnieuw gescoord: taakvaliditeit ' . app_format_compact_number($summary['task_validity'] * 100, 1) . '%.';
                 if ($task['status'] === 'published') {
                     $notice .= ' De publicatie blijft ongewijzigd tot je Publicatie bijwerken kiest.';
                 }
@@ -740,9 +825,29 @@ app_page_start($task['name'] . ' - Scoring', [
             <?php foreach ($turnpoints as $tp): ?>
               <li>
                 <span class="task-turnpoint-name"><?= h($tp['name']) ?></span>
-                <div class="task-turnpoint-controls">
-                  <label>Radius
+                <div class="task-turnpoint-controls" data-task-zone-container>
+                  <label>Zone
+                    <select form="turnpoints-form" name="control_zone_type[<?= (int)$tp['id'] ?>]" data-zone-select>
+                      <?php $zoneType = scoring_gap2025_zone_type($tp); ?>
+                      <option value="cylinder" <?= $zoneType === 'cylinder' ? 'selected' : '' ?>>Cylinder</option>
+                      <option value="line" <?= $zoneType === 'line' ? 'selected' : '' ?>>Lijn</option>
+                      <option value="goal_line" <?= $zoneType === 'goal_line' ? 'selected' : '' ?>>Goallijn</option>
+                    </select>
+                  </label>
+                  <label data-zone-visible="cylinder goal_line">Radius
                     <input form="turnpoints-form" type="number" name="radius[<?= (int)$tp['id'] ?>]" min="1" value="<?= (int)$tp['radius_m'] ?>">
+                  </label>
+                  <label data-zone-visible="line">Orientatie
+                    <input form="turnpoints-form" type="number" name="line_orientation_deg[<?= (int)$tp['id'] ?>]" min="0" max="359.99" step="0.01" value="<?= h((string)($tp['line_orientation_deg'] ?? '')) ?>" data-zone-required>
+                  </label>
+                  <label data-zone-visible="line">Offset km
+                    <input form="turnpoints-form" type="number" name="line_offset_km[<?= (int)$tp['id'] ?>]" min="-100" max="100" step="0.001" value="<?= h((string)($tp['line_offset_km'] ?? '0.000')) ?>">
+                  </label>
+                  <label data-zone-visible="line">Halve lijn km
+                    <input form="turnpoints-form" type="number" name="line_half_length_km[<?= (int)$tp['id'] ?>]" min="0.1" max="50" step="0.001" value="<?= h((string)($tp['line_half_length_km'] ?? '1.000')) ?>">
+                  </label>
+                  <label data-zone-visible="goal_line">Goallijn m
+                    <input form="turnpoints-form" type="number" name="goal_line_length_m[<?= (int)$tp['id'] ?>]" min="50" max="50000" step="1" value="<?= (int)($tp['goal_line_length_m'] ?? 400) ?>">
                   </label>
                   <label><input form="turnpoints-form" type="radio" name="sss_turnpoint_id" value="<?= (int)$tp['id'] ?>" <?= (int)$tp['is_speed_section_start'] === 1 ? 'checked' : '' ?>> SSS</label>
                   <label><input form="turnpoints-form" type="radio" name="ess_turnpoint_id" value="<?= (int)$tp['id'] ?>" <?= (int)$tp['is_speed_section_end'] === 1 ? 'checked' : '' ?>> ESS</label>
@@ -752,23 +857,6 @@ app_page_start($task['name'] . ' - Scoring', [
             <?php endforeach; ?>
           </ol>
         <?php endif; ?>
-
-        <form method="post" class="panel grid taskpoint-form taskpoint-add-form">
-          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-          <input type="hidden" name="action" value="add_turnpoint">
-          <label>Waypoint
-            <select name="waypoint_id" required>
-              <option value="">Kies waypoint</option>
-              <?php foreach ($waypoints as $wp): ?>
-                <option value="<?= (int)$wp['id'] ?>"><?= h($wp['name']) ?><?= $wp['code'] ? ' (' . h($wp['code']) . ')' : '' ?></option>
-              <?php endforeach; ?>
-            </select>
-          </label>
-          <label>Radius (m)
-            <input type="number" name="radius_m" min="1" value="400">
-          </label>
-          <p><button type="submit">Taakpunt toevoegen</button></p>
-        </form>
 
         <?php if (!empty($turnpoints)): ?>
           <p class="task-turnpoint-actions"><button form="turnpoints-form" type="submit">Taakpunten opslaan</button></p>
@@ -802,6 +890,59 @@ app_page_start($task['name'] . ' - Scoring', [
           <?php endif; ?>
         </div>
       </div>
+
+      <form method="post" class="panel taskpoint-add-panel" data-task-zone-container>
+        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+        <input type="hidden" name="action" value="add_turnpoint">
+        <div class="taskpoint-add-content">
+          <div class="grid taskpoint-form taskpoint-add-form">
+            <label>Waypoint
+              <select name="waypoint_id" required>
+                <option value="">Kies waypoint</option>
+                <?php foreach ($waypoints as $wp): ?>
+                  <option value="<?= (int)$wp['id'] ?>"><?= h($wp['name']) ?><?= $wp['code'] ? ' (' . h($wp['code']) . ')' : '' ?></option>
+                <?php endforeach; ?>
+              </select>
+            </label>
+            <label data-zone-visible="cylinder goal_line">Radius (m)
+              <input type="number" name="radius_m" min="1" value="400">
+            </label>
+            <label>Zone
+              <select name="control_zone_type" data-zone-select>
+                <option value="cylinder">Cylinder</option>
+                <option value="line">Lijn</option>
+                <option value="goal_line">Goallijn</option>
+              </select>
+            </label>
+            <label data-zone-visible="line">Orientatie lijn
+              <input type="number" name="line_orientation_deg" min="0" max="359.99" step="0.01" placeholder="0.00" data-zone-required>
+            </label>
+            <label data-zone-visible="line">Offset lijn (km)
+              <input type="number" name="line_offset_km" min="-100" max="100" step="0.001" value="0.000">
+            </label>
+            <label data-zone-visible="line">Halve lijn (km)
+              <input type="number" name="line_half_length_km" min="0.1" max="50" step="0.001" value="1.000">
+            </label>
+            <label data-zone-visible="goal_line">Goallijn (m)
+              <input type="number" name="goal_line_length_m" min="50" max="50000" step="1" value="400">
+            </label>
+            <p class="taskpoint-submit"><button type="submit">Taakpunt toevoegen</button></p>
+          </div>
+          <div class="task-zone-help">
+            <strong>Uitleg taakpunt-instellingen</strong>
+            <dl>
+              <div><dt>Waypoint</dt><dd>Het officiele referentiepunt waarop de zone is gebaseerd.</dd></div>
+              <div><dt>Zone</dt><dd>Cylinder, lijn, of goallijn volgens GAP 2025.</dd></div>
+              <div data-zone-visible="cylinder goal_line"><dt>Radius</dt><dd>Cylinderradius. Bij een goallijn is dit de straal van de halve cirkel achter de lijn.</dd></div>
+              <div data-zone-visible="line"><dt>Orientatie lijn</dt><dd>Ware koers in graden vanaf het waypoint naar het midden van de lijn; de lijn zelf staat daar haaks op.</dd></div>
+              <div data-zone-visible="line"><dt>Offset lijn</dt><dd>Afstand in km van waypoint naar lijnmidden. Negatief betekent dezelfde afstand in tegengestelde richting.</dd></div>
+              <div data-zone-visible="line"><dt>Halve lijn</dt><dd>Afstand in km van lijnmidden naar elk eindpunt; totale lijnlengte is dus tweemaal deze waarde.</dd></div>
+              <div data-zone-visible="goal_line"><dt>Goallijn</dt><dd>Totale lengte van de virtuele finishlijn in meters. De richting wordt uit de geoptimaliseerde laatste taakpoot gehaald.</dd></div>
+            </dl>
+            <p class="muted" data-zone-summary>Voor een cylinder tellen vooral waypoint en radius.</p>
+          </div>
+        </div>
+      </form>
     </div>
   </section>
 
@@ -847,8 +988,15 @@ app_page_start($task['name'] . ' - Scoring', [
         <label>Leading Time Ratio (%)
           <input type="number" name="leading_time_ratio_percent" min="0" max="26" step="0.1" value="<?= h(app_format_compact_number(scoring_gap2025_leading_time_ratio_percent($task), 1)) ?>">
         </label>
+        <label>JTG seconden per punt
+          <input type="number" name="jump_the_gun_seconds_per_point" min="0.1" max="600" step="0.1" value="<?= h(app_format_compact_number(scoring_gap2025_jump_the_gun_seconds_per_point($task), 1)) ?>">
+        </label>
+        <label>JTG max seconden
+          <input type="number" name="jump_the_gun_max_seconds" min="0" max="3600" step="1" value="<?= (int)scoring_gap2025_jump_the_gun_max_seconds($task) ?>">
+        </label>
       </div>
       <div class="checkbox-grid">
+        <label><input type="checkbox" name="jump_the_gun_enabled" <?= scoring_gap2025_jump_the_gun_enabled($task) ? 'checked' : '' ?>> Jump-the-Gun toepassen</label>
         <label><input type="checkbox" name="use_distance_points" <?= (int)$task['use_distance_points'] === 1 ? 'checked' : '' ?>> Afstandspunten</label>
         <label><input type="checkbox" name="use_time_points" <?= (int)$task['use_time_points'] === 1 ? 'checked' : '' ?>> Tijdspunten</label>
         <label><input type="checkbox" name="use_leading_points" <?= (int)$task['use_leading_points'] === 1 ? 'checked' : '' ?>> Leadingpunten</label>
@@ -960,7 +1108,7 @@ app_page_start($task['name'] . ' - Scoring', [
     <div class="section-header">
       <div>
         <h2>Track review</h2>
-        <p class="muted">Zoek uploads en Flymaster-reconstructies, kies per piloot welke rij voor de score telt, en laat alternatieven staan als fallback.</p>
+        <p class="muted">Zoek uploads en live-tracking kandidaten, kies per piloot welke rij voor de score telt, en laat alternatieven staan als fallback.</p>
       </div>
       <div class="inline">
         <form method="post">
@@ -972,6 +1120,11 @@ app_page_start($task['name'] . ' - Scoring', [
           <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
           <input type="hidden" name="action" value="collect_flymaster">
           <button class="secondary" type="submit">Flymaster zoeken</button>
+        </form>
+        <form method="post">
+          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+          <input type="hidden" name="action" value="collect_skytraxx">
+          <button class="secondary" type="submit">Skytraxx zoeken</button>
         </form>
       </div>
     </div>
@@ -1075,6 +1228,10 @@ app_page_start($task['name'] . ' - Scoring', [
                         $sourceLabel = 'LiveTrack24';
                     } elseif (($flight['source'] ?? '') === 'flymaster_replay') {
                         $sourceLabel = 'Flymaster replay';
+                    } elseif (($flight['source'] ?? '') === 'burnair_igc') {
+                        $sourceLabel = 'Burnair IGC';
+                    } elseif (($flight['source'] ?? '') === 'burnair_livetracking_replay') {
+                        $sourceLabel = 'Burnair replay';
                     }
                     $filenameLabel = trim((string)($flight['original_filename'] ?? ''));
                     $timeLabel = scoring_utc_sql_to_display($flight['first_fix_at']);
@@ -1095,11 +1252,13 @@ app_page_start($task['name'] . ' - Scoring', [
                         } else {
                             $trackLabelParts[] = 'Flymaster reconstructie';
                         }
-	                    } elseif (!empty($flight['uploaded_at'])) {
-	                        $trackLabelParts[] = 'upload ' . scoring_utc_sql_to_display($flight['uploaded_at']);
-	                    }
-	                    $trackLabelParts[] = scoring_tracklog_evidence_code($flight);
-	                    $trackLabelParts[] = 'kandidaat #' . $flightId;
+                    } elseif (in_array(($flight['source'] ?? ''), ['burnair_igc', 'burnair_livetracking_replay'], true)) {
+                        $trackLabelParts[] = 'Skytraxx/Burnair';
+                    } elseif (!empty($flight['uploaded_at'])) {
+                        $trackLabelParts[] = 'upload ' . scoring_utc_sql_to_display($flight['uploaded_at']);
+                    }
+                    $trackLabelParts[] = scoring_tracklog_evidence_code($flight);
+                    $trackLabelParts[] = 'kandidaat #' . $flightId;
                     $trackLabel = implode(' · ', $trackLabelParts);
                   ?>
                       <option value="<?= $flightId ?>" data-map-url="task.php?id=<?= (int)$taskId ?>&amp;review_map=1&amp;flight_id=<?= $flightId ?>" <?= $selectedTrackId === $flightId ? 'selected' : '' ?>><?= h($trackLabel) ?></option>
@@ -1205,28 +1364,47 @@ app_page_start($task['name'] . ' - Scoring', [
       </div>
     </div>
 
-    <?php if (!empty($summary['implementation_note'])): ?>
-      <div class="notice"><?= h($summary['implementation_note']) ?></div>
-    <?php endif; ?>
+	    <?php if (!empty($summary['implementation_note'])): ?>
+	      <div class="notice"><?= h($summary['implementation_note']) ?></div>
+	    <?php endif; ?>
+	    <?php if (!empty($summary['gap2025_support']) && is_array($summary['gap2025_support'])): ?>
+	      <div class="notice">
+	        <strong><?= h($summary['gap2025_support']['label'] ?? 'GAP 2025 support') ?></strong>
+	        <?php if (!empty($summary['gap2025_support']['limits']) && is_array($summary['gap2025_support']['limits'])): ?>
+	          <ul class="list-compact">
+	            <?php foreach ($summary['gap2025_support']['limits'] as $limit): ?>
+	              <li><?= h($limit) ?></li>
+	            <?php endforeach; ?>
+	          </ul>
+	        <?php endif; ?>
+	      </div>
+	    <?php endif; ?>
 
-    <?php if (empty($results)): ?>
-      <p class="muted">Geen score-resultaten beschikbaar.</p>
-    <?php else: ?>
-      <div class="table-responsive">
-        <table class="striped">
-          <thead>
-            <tr>
+	    <?php if (empty($results)): ?>
+	      <p class="muted">Geen score-resultaten beschikbaar.</p>
+	    <?php else: ?>
+	      <form method="post">
+	        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+	        <input type="hidden" name="action" value="save_adjustments">
+	      <div class="table-responsive">
+	        <table class="striped">
+	          <thead>
+	            <tr>
               <th>#</th>
               <th>Piloot</th>
               <th>Afstand</th>
               <th>Tijd</th>
               <th>Afstandspunten</th>
-              <th>Tijd</th>
-              <th>Leading</th>
-              <th>Arrival</th>
-              <th>Totaal</th>
-            </tr>
-          </thead>
+	              <th>Tijd</th>
+	              <th>Leading</th>
+	              <th>Arrival</th>
+	              <th>Raw</th>
+	              <th>Penalty</th>
+	              <th>Bonus</th>
+	              <th>Reden</th>
+	              <th>Totaal</th>
+	            </tr>
+	          </thead>
           <tbody>
             <?php foreach ($results as $row): ?>
               <?php $evidenceCode = scoring_result_evidence_code($row); ?>
@@ -1236,16 +1414,26 @@ app_page_start($task['name'] . ' - Scoring', [
                 <td><?= h(app_format_compact_number($row['distance_km'], 3)) ?> km<?= (int)$row['reached_goal'] === 1 ? ' <span class="muted">goal</span>' : '' ?></td>
                 <td><?= h(scoring_format_duration($row['time_seconds'] !== null ? (int)$row['time_seconds'] : null)) ?></td>
                 <td><?= h(app_format_compact_number($row['distance_points'], 1)) ?></td>
-                <td><?= h(app_format_compact_number($row['time_points'], 1)) ?></td>
-                <td><?= h(app_format_compact_number($row['leading_points'], 1)) ?></td>
-                <td><?= h(app_format_compact_number(((float)$row['arrival_position_points']) + ((float)$row['arrival_time_points']), 1)) ?></td>
-                <td><strong><?= h(app_format_compact_number($row['total_points'], 1)) ?></strong></td>
-              </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
-      </div>
-      <p class="muted evidence-legend"><?= h(scoring_evidence_legend_text()) ?></p>
+	                <td><?= h(app_format_compact_number($row['time_points'], 1)) ?></td>
+	                <td><?= h(app_format_compact_number($row['leading_points'], 1)) ?></td>
+	                <td><?= h(app_format_compact_number(((float)$row['arrival_position_points']) + ((float)$row['arrival_time_points']), 1)) ?></td>
+	                <td><?= h(app_format_compact_number($row['raw_points'] ?? $row['total_points'], 1)) ?></td>
+	                <td>
+	                  <?php $autoPenalty = (float)($row['jump_the_gun_penalty_points'] ?? 0.0); ?>
+	                  <?php if ($autoPenalty > 0): ?><span class="muted">JTG <?= h(app_format_compact_number($autoPenalty, 1)) ?></span><?php endif; ?>
+	                  <input type="number" name="manual_penalty_points[<?= (int)$row['id'] ?>]" min="0" step="0.1" value="<?= h(app_format_compact_number($row['manual_penalty_points'] ?? 0, 1)) ?>">
+	                </td>
+	                <td><input type="number" name="manual_bonus_points[<?= (int)$row['id'] ?>]" min="0" step="0.1" value="<?= h(app_format_compact_number($row['manual_bonus_points'] ?? 0, 1)) ?>"></td>
+	                <td><input type="text" name="adjustment_reason[<?= (int)$row['id'] ?>]" value="<?= h($row['adjustment_reason'] ?? '') ?>" maxlength="255"></td>
+	                <td><strong><?= h(app_format_compact_number($row['total_points'], 1)) ?></strong></td>
+	              </tr>
+	            <?php endforeach; ?>
+	          </tbody>
+	        </table>
+	      </div>
+	      <p><button class="secondary" type="submit">Correcties opslaan</button></p>
+	      </form>
+	      <p class="muted evidence-legend"><?= h(scoring_evidence_legend_text()) ?></p>
       <?php if ($task['status'] === 'published'): ?>
         <p class="actions">
           <a class="btn secondary" href="../public/scoring_task.php?id=<?= (int)$task['id'] ?>">Bekijk publieke taakresultaten</a>

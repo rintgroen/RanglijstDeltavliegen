@@ -134,7 +134,55 @@ function scoring_gap2025_input_leading_time_ratio($value, array $task = []): flo
 
 function scoring_gap2025_cylinder_outer_radius_m(array $turnpoint): float {
     $radius = max(0.0, (float)($turnpoint['radius_m'] ?? 0));
-    return $radius + max(1.0, $radius * 0.001);
+    return max($radius * 1.001, $radius + 5.0);
+}
+
+function scoring_gap2025_cylinder_inner_radius_m(array $turnpoint): float {
+    $radius = max(0.0, (float)($turnpoint['radius_m'] ?? 0));
+    return max(0.0, min($radius * 0.999, $radius - 5.0));
+}
+
+function scoring_gap2025_default_jump_the_gun_enabled(array $task): bool {
+    $profile = scoring_gap2025_class_profile($task);
+    return $profile['discipline'] === 'hang_gliding';
+}
+
+function scoring_gap2025_jump_the_gun_enabled(array $task): bool {
+    if (($task['task_type'] ?? 'race') !== 'race') {
+        return false;
+    }
+    $profile = scoring_gap2025_class_profile($task);
+    if ($profile['discipline'] !== 'hang_gliding') {
+        return false;
+    }
+    if (!array_key_exists('jump_the_gun_enabled', $task)) {
+        return true;
+    }
+    return (int)$task['jump_the_gun_enabled'] === 1;
+}
+
+function scoring_gap2025_jump_the_gun_seconds_per_point(array $task): float {
+    $raw = $task['jump_the_gun_seconds_per_point'] ?? null;
+    $value = is_numeric($raw) ? (float)$raw : 2.0;
+    return max(0.1, min(600.0, $value));
+}
+
+function scoring_gap2025_jump_the_gun_max_seconds(array $task): int {
+    $raw = $task['jump_the_gun_max_seconds'] ?? null;
+    $value = is_numeric($raw) ? (int)$raw : 300;
+    return max(0, min(3600, $value));
+}
+
+function scoring_gap2025_input_jump_seconds_per_point($value): float {
+    $seconds = scoring_decimal_or_null($value);
+    return $seconds !== null ? max(0.1, min(600.0, $seconds)) : 2.0;
+}
+
+function scoring_gap2025_input_jump_max_seconds($value): int {
+    if (!is_numeric($value)) {
+        return 300;
+    }
+    return max(0, min(3600, (int)$value));
 }
 
 function scoring_gate_local_to_utc_sql(string $taskDate, string $time): string {
@@ -768,6 +816,11 @@ function scoring_ensure_track_collection_tables(PDO $pdo): void {
           flymaster_enabled_at DATETIME DEFAULT NULL,
           flymaster_disabled_at DATETIME DEFAULT NULL,
           last_flymaster_check_at DATETIME DEFAULT NULL,
+          skytraxx_device_id VARCHAR(80) DEFAULT NULL,
+          skytraxx_enabled TINYINT(1) NOT NULL DEFAULT 0,
+          skytraxx_enabled_at DATETIME DEFAULT NULL,
+          skytraxx_disabled_at DATETIME DEFAULT NULL,
+          last_skytraxx_check_at DATETIME DEFAULT NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
           PRIMARY KEY (id),
@@ -775,7 +828,9 @@ function scoring_ensure_track_collection_tables(PDO $pdo): void {
           KEY idx_rankings_track_collection_profiles_lt24 (livetrack24_username),
           KEY idx_rankings_track_collection_profiles_enabled (livetrack24_enabled, livetrack24_username),
           KEY idx_rankings_track_collection_profiles_flymaster (flymaster_serial),
-          KEY idx_rankings_track_collection_profiles_flymaster_enabled (flymaster_enabled, flymaster_serial)
+          KEY idx_rankings_track_collection_profiles_flymaster_enabled (flymaster_enabled, flymaster_serial),
+          KEY idx_rankings_track_collection_profiles_skytraxx (skytraxx_device_id),
+          KEY idx_rankings_track_collection_profiles_skytraxx_enabled (skytraxx_enabled, skytraxx_device_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
     );
 
@@ -840,6 +895,27 @@ function scoring_ensure_track_collection_tables(PDO $pdo): void {
     if (!scoring_table_index_exists($pdo, 'rankings_track_collection_profiles', 'idx_rankings_track_collection_profiles_flymaster_enabled')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD KEY idx_rankings_track_collection_profiles_flymaster_enabled (flymaster_enabled, flymaster_serial)', [1061], ['42000']);
     }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'skytraxx_device_id')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN skytraxx_device_id VARCHAR(80) DEFAULT NULL AFTER last_flymaster_check_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'skytraxx_enabled')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN skytraxx_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER skytraxx_device_id', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'skytraxx_enabled_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN skytraxx_enabled_at DATETIME DEFAULT NULL AFTER skytraxx_enabled', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'skytraxx_disabled_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN skytraxx_disabled_at DATETIME DEFAULT NULL AFTER skytraxx_enabled_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_track_collection_profiles', 'last_skytraxx_check_at')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD COLUMN last_skytraxx_check_at DATETIME DEFAULT NULL AFTER skytraxx_disabled_at', [1060], ['42S21']);
+    }
+    if (!scoring_table_index_exists($pdo, 'rankings_track_collection_profiles', 'idx_rankings_track_collection_profiles_skytraxx')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD KEY idx_rankings_track_collection_profiles_skytraxx (skytraxx_device_id)', [1061], ['42000']);
+    }
+    if (!scoring_table_index_exists($pdo, 'rankings_track_collection_profiles', 'idx_rankings_track_collection_profiles_skytraxx_enabled')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_track_collection_profiles ADD KEY idx_rankings_track_collection_profiles_skytraxx_enabled (skytraxx_enabled, skytraxx_device_id)', [1061], ['42000']);
+    }
 }
 
 function scoring_track_collection_available(PDO $pdo): bool {
@@ -872,6 +948,21 @@ function scoring_ensure_task_review_columns(PDO $pdo): void {
     if (!scoring_table_index_exists($pdo, 'rankings_scoring_task_flights', 'idx_rankings_scoring_task_flights_status')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_flights ADD KEY idx_rankings_scoring_task_flights_status (task_id, result_status)', [1061], ['42000']);
     }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'raw_points')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_flights ADD COLUMN raw_points DECIMAL(8,1) NOT NULL DEFAULT 0.0 AFTER arrival_time_points', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'jump_the_gun_penalty_points')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_flights ADD COLUMN jump_the_gun_penalty_points DECIMAL(8,1) NOT NULL DEFAULT 0.0 AFTER raw_points', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'manual_penalty_points')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_flights ADD COLUMN manual_penalty_points DECIMAL(8,1) NOT NULL DEFAULT 0.0 AFTER jump_the_gun_penalty_points', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'manual_bonus_points')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_flights ADD COLUMN manual_bonus_points DECIMAL(8,1) NOT NULL DEFAULT 0.0 AFTER manual_penalty_points', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_flights', 'adjustment_reason')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_flights ADD COLUMN adjustment_reason VARCHAR(255) DEFAULT NULL AFTER manual_bonus_points', [1060], ['42S21']);
+    }
 }
 
 function scoring_ensure_task_active_column(PDO $pdo): void {
@@ -887,8 +978,36 @@ function scoring_ensure_task_active_column(PDO $pdo): void {
     if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'leading_time_ratio')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN leading_time_ratio DECIMAL(5,4) NOT NULL DEFAULT 0.1750 AFTER nominal_time_minutes', [1060], ['42S21']);
     }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'jump_the_gun_enabled')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN jump_the_gun_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER leading_time_ratio', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'jump_the_gun_seconds_per_point')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN jump_the_gun_seconds_per_point DECIMAL(6,2) NOT NULL DEFAULT 2.00 AFTER jump_the_gun_enabled', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_tasks', 'jump_the_gun_max_seconds')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD COLUMN jump_the_gun_max_seconds INT UNSIGNED NOT NULL DEFAULT 300 AFTER jump_the_gun_seconds_per_point', [1060], ['42S21']);
+    }
     if (!scoring_table_index_exists($pdo, 'rankings_scoring_tasks', 'idx_rankings_scoring_tasks_competition_active')) {
         scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_tasks ADD KEY idx_rankings_scoring_tasks_competition_active (competition_id, active)', [1061], ['42000']);
+    }
+    scoring_ensure_task_turnpoint_zone_columns($pdo);
+}
+
+function scoring_ensure_task_turnpoint_zone_columns(PDO $pdo): void {
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_turnpoints', 'control_zone_type')) {
+        scoring_exec_schema_change($pdo, "ALTER TABLE rankings_scoring_task_turnpoints ADD COLUMN control_zone_type VARCHAR(20) NOT NULL DEFAULT 'cylinder' AFTER radius_m", [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_turnpoints', 'line_orientation_deg')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_turnpoints ADD COLUMN line_orientation_deg DECIMAL(6,2) DEFAULT NULL AFTER control_zone_type', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_turnpoints', 'line_offset_km')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_turnpoints ADD COLUMN line_offset_km DECIMAL(8,3) NOT NULL DEFAULT 0.000 AFTER line_orientation_deg', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_turnpoints', 'line_half_length_km')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_turnpoints ADD COLUMN line_half_length_km DECIMAL(8,3) NOT NULL DEFAULT 1.000 AFTER line_offset_km', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_turnpoints', 'goal_line_length_m')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_turnpoints ADD COLUMN goal_line_length_m INT UNSIGNED NOT NULL DEFAULT 400 AFTER line_half_length_km', [1060], ['42S21']);
     }
 }
 
@@ -1033,12 +1152,12 @@ function scoring_consume_track_collection_login_token(PDO $pdo, string $token): 
 function scoring_send_track_collection_magic_link(string $email, string $link): bool {
     $subject = app_site_name() . ' trackprofiel';
     $text = "Hallo,\n\nGebruik deze link om je trackprofiel te openen:\n\n" . $link
-        . "\n\nHier kun je je naam voor uitslagen, Flymaster serienummer en toestemming voor competitie scoring beheren. Deze link verloopt automatisch.\n";
+        . "\n\nHier kun je je naam voor uitslagen, tracker ID en toestemming voor competitie scoring beheren. Deze link verloopt automatisch.\n";
     $html = scoring_html_email_shell('Je trackprofiel', ''
         . '<p style="margin:0 0 14px;">Hallo,</p>'
         . '<p style="margin:0 0 18px;">Met onderstaande knop open je je trackprofiel voor competitie scoring.</p>'
         . '<p style="margin:0 0 18px;"><a href="' . h($link) . '" style="background:#0f6fa8;border-radius:6px;color:#ffffff;display:inline-block;font-weight:bold;padding:11px 16px;text-decoration:none;">Trackprofiel openen</a></p>'
-        . '<p style="margin:0 0 12px;color:#516779;">Hier kun je je naam voor uitslagen, Flymaster serienummer en toestemming voor competitie scoring beheren. Deze link verloopt automatisch.</p>'
+        . '<p style="margin:0 0 12px;color:#516779;">Hier kun je je naam voor uitslagen, tracker ID en toestemming voor competitie scoring beheren. Deze link verloopt automatisch.</p>'
         . '<p style="margin:0;color:#516779;font-size:13px;">Werkt de knop niet? Open deze link:<br><a href="' . h($link) . '">' . h($link) . '</a></p>');
     return scoring_send_email($email, $subject, $text, $html, 'track-profile-login');
 }
@@ -1414,7 +1533,7 @@ function scoring_validate_tracklog_by_id(PDO $pdo, int $tracklogId, bool $force 
     }
 
     $source = strtolower(trim((string)($tracklog['source'] ?? 'manual_upload')));
-    if (in_array($source, ['flymaster_replay', 'livetrack24'], true)) {
+    if (scoring_tracklog_source_is_live_reconstruction($source)) {
         $validation = [
             'validation_status' => 'skipped',
             'validation_checked_at' => scoring_now_utc(),
@@ -1525,6 +1644,10 @@ function scoring_find_tracklog_by_source(PDO $pdo, string $source, string $exter
     $stmt->execute([$source, $externalId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ?: null;
+}
+
+function scoring_tracklog_source_is_live_reconstruction(string $source): bool {
+    return in_array(strtolower(trim($source)), ['flymaster_replay', 'livetrack24', 'burnair_livetracking_replay'], true);
 }
 
 function scoring_link_tracklog_to_task(PDO $pdo, array $task, int $tracklogId, string $pilotName, string $pilotEmail): int {
@@ -2266,6 +2389,462 @@ function scoring_import_flymaster_for_task(PDO $pdo, array $task, array $turnpoi
     return $summary;
 }
 
+function scoring_burnair_public_livetracking_enabled(): bool {
+    return defined('SCORING_BURNAIR_PUBLIC_LIVETRACKING') && (bool)SCORING_BURNAIR_PUBLIC_LIVETRACKING;
+}
+
+function scoring_burnair_igc_url_template(): string {
+    return defined('SCORING_BURNAIR_IGC_URL_TEMPLATE') ? trim((string)SCORING_BURNAIR_IGC_URL_TEMPLATE) : '';
+}
+
+function scoring_burnair_igc_auth_bearer(): string {
+    return defined('SCORING_BURNAIR_IGC_AUTH_BEARER') ? trim((string)SCORING_BURNAIR_IGC_AUTH_BEARER) : '';
+}
+
+function scoring_burnair_normalize_device_id(string $deviceId): string {
+    $deviceId = strtoupper(trim($deviceId));
+    if ($deviceId === '') {
+        return '';
+    }
+    $deviceId = str_replace([',', ':', ' '], '-', $deviceId);
+    $deviceId = preg_replace('/[^A-Z0-9_-]+/', '', $deviceId) ?? '';
+    $deviceId = preg_replace('/-+/', '-', $deviceId) ?? '';
+    $deviceId = trim($deviceId, '-_');
+    if ($deviceId === '' || strlen($deviceId) > 80 || !preg_match('/^[A-Z0-9][A-Z0-9_-]{1,79}$/', $deviceId)) {
+        throw new RuntimeException('Vul een geldige Skytraxx/Burnair device ID in.');
+    }
+    return $deviceId;
+}
+
+function scoring_burnair_device_id_candidates(string $deviceId): array {
+    $deviceId = scoring_burnair_normalize_device_id($deviceId);
+    if ($deviceId === '') {
+        return [];
+    }
+    $candidates = [$deviceId];
+    if (strpos($deviceId, '-') === false && preg_match('/^[A-F0-9]{3,12}$/', $deviceId)) {
+        $candidates[] = substr($deviceId, 0, 2) . '-' . substr($deviceId, 2);
+    }
+    return array_values(array_unique($candidates));
+}
+
+function scoring_burnair_http_get(string $url, int $timeoutSeconds, string $accept, array $extraHeaders = []): string {
+    $userAgent = 'Mozilla/5.0 (compatible; RanglijstDeltavliegen/1.0; +https://www.ranglijstdeltavliegen.nl)';
+    $headers = array_merge(['Accept: ' . $accept], $extraHeaders);
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            throw new RuntimeException('Kon Burnair URL niet voorbereiden.');
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 4,
+            CURLOPT_CONNECTTIMEOUT => min(10, $timeoutSeconds),
+            CURLOPT_TIMEOUT => $timeoutSeconds,
+            CURLOPT_USERAGENT => $userAgent,
+            CURLOPT_HTTPHEADER => $headers,
+        ]);
+        $body = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $error = (string)curl_error($ch);
+        if (PHP_VERSION_ID < 80500) {
+            curl_close($ch);
+        }
+        if ($body === false) {
+            throw new RuntimeException('Kon Burnair URL niet ophalen' . ($error !== '' ? ': ' . $error : '') . '.');
+        }
+        if ($status >= 400) {
+            throw new RuntimeException('Burnair URL gaf HTTP ' . $status . '.');
+        }
+        return (string)$body;
+    }
+
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'header' => implode("\r\n", array_merge(['User-Agent: ' . $userAgent], $headers)) . "\r\n",
+            'ignore_errors' => true,
+            'timeout' => $timeoutSeconds,
+        ],
+    ]);
+    $body = @file_get_contents($url, false, $context);
+    $status = 0;
+    if (function_exists('http_get_last_response_headers')) {
+        $responseHeaders = http_get_last_response_headers();
+        $responseHeaders = is_array($responseHeaders) ? $responseHeaders : [];
+    } else {
+        $definedVars = get_defined_vars();
+        $responseHeaders = isset($definedVars['http_response_header']) && is_array($definedVars['http_response_header'])
+            ? $definedVars['http_response_header']
+            : [];
+    }
+    foreach ($responseHeaders as $header) {
+        if (preg_match('/^HTTP\/\S+\s+(\d+)/', (string)$header, $m)) {
+            $status = (int)$m[1];
+            break;
+        }
+    }
+    if ($body === false) {
+        throw new RuntimeException('Kon Burnair URL niet ophalen.');
+    }
+    if ($status >= 400) {
+        throw new RuntimeException('Burnair URL gaf HTTP ' . $status . '.');
+    }
+    return $body;
+}
+
+function scoring_burnair_template_url(string $template, string $deviceId, int $startTs, int $endTs): string {
+    $replacements = [
+        '{id}' => rawurlencode($deviceId),
+        '{device_id}' => rawurlencode($deviceId),
+        '{date}' => gmdate('Y-m-d', $startTs),
+        '{start}' => (string)$startTs,
+        '{end}' => (string)$endTs,
+        '{start_iso}' => rawurlencode(gmdate('Y-m-d\TH:i:s\Z', $startTs)),
+        '{end_iso}' => rawurlencode(gmdate('Y-m-d\TH:i:s\Z', $endTs)),
+    ];
+    return strtr($template, $replacements);
+}
+
+function scoring_burnair_temp_igc_from_content(string $content, string $prefix = 'ba_'): string {
+    if (!preg_match('/^A/m', $content) || !preg_match('/^B\d{6}/m', $content)) {
+        throw new RuntimeException('Burnair gaf geen bruikbaar IGC-bestand terug.');
+    }
+    $tmp = tempnam(sys_get_temp_dir(), $prefix);
+    if ($tmp === false) {
+        throw new RuntimeException('Tijdelijk Burnair-bestand kon niet worden gemaakt.');
+    }
+    if (@file_put_contents($tmp, $content) === false) {
+        @unlink($tmp);
+        throw new RuntimeException('Tijdelijk Burnair-bestand kon niet worden opgeslagen.');
+    }
+    return $tmp;
+}
+
+function scoring_burnair_fetch_direct_igc(string $deviceId, int $startTs, int $endTs): ?array {
+    $template = scoring_burnair_igc_url_template();
+    if ($template === '') {
+        return null;
+    }
+    $url = scoring_burnair_template_url($template, $deviceId, $startTs, $endTs);
+    $headers = [];
+    $bearer = scoring_burnair_igc_auth_bearer();
+    if ($bearer !== '') {
+        $headers[] = 'Authorization: Bearer ' . $bearer;
+    }
+    $content = scoring_burnair_http_get($url, 25, 'text/plain,application/octet-stream,*/*', $headers);
+    return [
+        'path' => scoring_burnair_temp_igc_from_content($content),
+        'url' => $url,
+        'hash' => sha1($content),
+    ];
+}
+
+function scoring_igc_metadata_intersects_task(array $igc, array $task, array $bbox): bool {
+    if (($igc['first_fix_at'] ?? '') > (string)$task['window_close_at'] || ($igc['last_fix_at'] ?? '') < (string)$task['window_open_at']) {
+        return false;
+    }
+    return (float)$igc['max_lat'] >= (float)$bbox['min_lat']
+        && (float)$igc['min_lat'] <= (float)$bbox['max_lat']
+        && (float)$igc['max_lon'] >= (float)$bbox['min_lon']
+        && (float)$igc['min_lon'] <= (float)$bbox['max_lon'];
+}
+
+function scoring_burnair_livetracking_tracks_url(string $deviceId): string {
+    return 'https://api.burnair.cloud/v1/liveTracking/tracks/?ids=' . rawurlencode($deviceId);
+}
+
+function scoring_burnair_fetch_livetracking_points(string $deviceId): array {
+    if (!scoring_burnair_public_livetracking_enabled()) {
+        return [];
+    }
+    foreach (scoring_burnair_device_id_candidates($deviceId) as $candidate) {
+        $body = scoring_burnair_http_get(scoring_burnair_livetracking_tracks_url($candidate), 15, 'application/json,text/plain,*/*');
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded) || empty($decoded['tracks']) || !is_array($decoded['tracks'])) {
+            continue;
+        }
+        $trackRows = [];
+        foreach ($decoded['tracks'] as $track) {
+            if (is_array($track) && strtoupper((string)($track['id'] ?? '')) === strtoupper($candidate) && isset($track['track']) && is_array($track['track'])) {
+                $trackRows = $track['track'];
+                break;
+            }
+        }
+        if (empty($trackRows) && isset($decoded['tracks'][0]['track']) && is_array($decoded['tracks'][0]['track'])) {
+            $trackRows = $decoded['tracks'][0]['track'];
+        }
+        $points = [];
+        foreach ($trackRows as $row) {
+            if (!is_array($row) || count($row) < 3 || !is_numeric($row[0]) || !is_numeric($row[1]) || !is_numeric($row[2])) {
+                continue;
+            }
+            $epoch = (int)$row[0];
+            $lat = (float)$row[1];
+            $lon = (float)$row[2];
+            if ($epoch <= 0 || $lat < -90.0 || $lat > 90.0 || $lon < -180.0 || $lon > 180.0) {
+                continue;
+            }
+            $altitude = isset($row[7]) && is_numeric($row[7]) ? (int)round((float)$row[7]) : 0;
+            $points[] = [
+                'epoch' => $epoch,
+                'lat' => $lat,
+                'lon' => $lon,
+                'altitude' => max(0, min(99999, $altitude)),
+            ];
+        }
+        if (count($points) >= 2) {
+            usort($points, function (array $a, array $b): int {
+                return $a['epoch'] <=> $b['epoch'];
+            });
+            return $points;
+        }
+    }
+    return [];
+}
+
+function scoring_burnair_points_for_task_window(array $points, int $openTs, int $closeTs, int $marginSeconds = 3600): array {
+    $start = $openTs - max(0, $marginSeconds);
+    $end = $closeTs + max(0, $marginSeconds);
+    return array_values(array_filter($points, function (array $point) use ($start, $end): bool {
+        $epoch = (int)($point['epoch'] ?? 0);
+        return $epoch >= $start && $epoch <= $end;
+    }));
+}
+
+function scoring_burnair_points_intersect_bbox(array $points, array $bbox): bool {
+    foreach ($points as $point) {
+        $lat = (float)($point['lat'] ?? 0.0);
+        $lon = (float)($point['lon'] ?? 0.0);
+        if ($lat >= (float)$bbox['min_lat']
+            && $lat <= (float)$bbox['max_lat']
+            && $lon >= (float)$bbox['min_lon']
+            && $lon <= (float)$bbox['max_lon']) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function scoring_burnair_trace_key(array $points): string {
+    $count = count($points);
+    if ($count === 0) {
+        return 'empty';
+    }
+    return sha1(json_encode([
+        $count,
+        $points[0],
+        $points[$count - 1],
+    ], JSON_UNESCAPED_SLASHES));
+}
+
+function scoring_burnair_reconstructed_igc_content(array $points, string $pilotName, string $deviceId): string {
+    if (count($points) < 2) {
+        throw new RuntimeException('Burnair track bevat te weinig punten.');
+    }
+    $date = (new DateTimeImmutable('@' . (int)$points[0]['epoch']))->setTimezone(scoring_utc_timezone());
+    $lines = [
+        'AXXXRANGLIJST',
+        'HFDTE' . $date->format('dmy'),
+        'HFPLTPILOTINCHARGE:' . trim($pilotName),
+        'HFGTYGLIDERTYPE:Skytraxx via Burnair live tracking',
+        'HFRFWFIRMWAREVERSION:Ranglijst Burnair scout',
+        'HFCIDCOMPETITIONID:Burnair ' . $deviceId,
+    ];
+    foreach ($points as $point) {
+        $lat = scoring_flymaster_encode_igc_coord((float)$point['lat'], true);
+        $lon = scoring_flymaster_encode_igc_coord((float)$point['lon'], false);
+        $altitude = max(0, min(99999, (int)($point['altitude'] ?? 0)));
+        $lines[] = 'B' . gmdate('His', (int)$point['epoch']) . $lat . $lon . 'A' . sprintf('%05d%05d', $altitude, $altitude);
+    }
+    $lines[] = 'LPLTReconstructed from Burnair live-tracking points; not an original signed IGC.';
+    return implode("\n", $lines) . "\n";
+}
+
+function scoring_burnair_write_reconstructed_igc(array $points, string $pilotName, string $deviceId): string {
+    return scoring_burnair_temp_igc_from_content(scoring_burnair_reconstructed_igc_content($points, $pilotName, $deviceId), 'ba_');
+}
+
+function scoring_burnair_import_file_candidate(
+    PDO $pdo,
+    array $task,
+    string $source,
+    string $externalId,
+    string $sourceUrl,
+    string $tmpPath,
+    string $originalFilename,
+    string $pilotName,
+    ?string $pilotEmail,
+    array &$summary
+): void {
+    $summary['candidates']++;
+    $existing = scoring_find_tracklog_by_source($pdo, $source, $externalId);
+    if ($existing) {
+        $tracklog = $existing;
+    } else {
+        $tracklogId = scoring_store_tracklog_file(
+            $pdo,
+            $tmpPath,
+            $originalFilename,
+            $pilotName,
+            $pilotEmail,
+            [
+                'source' => $source,
+                'external_id' => $externalId,
+                'url' => $sourceUrl,
+            ]
+        );
+        $stmt = $pdo->prepare('SELECT id, pilot_name, pilot_email FROM rankings_scoring_tracklogs WHERE id = ? LIMIT 1');
+        $stmt->execute([$tracklogId]);
+        $tracklog = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$tracklog) {
+            throw new RuntimeException('Burnair kandidaat kon niet worden teruggevonden.');
+        }
+    }
+
+    $flightId = scoring_link_tracklog_to_task(
+        $pdo,
+        $task,
+        (int)$tracklog['id'],
+        (string)$tracklog['pilot_name'],
+        (string)$tracklog['pilot_email']
+    );
+    if ($existing) {
+        if ($flightId > 0) {
+            $summary['already_linked']++;
+        }
+    } else {
+        $summary['imported']++;
+    }
+}
+
+function scoring_import_burnair_skytraxx_for_task(PDO $pdo, array $task, array $turnpoints): array {
+    scoring_ensure_track_collection_tables($pdo);
+    if (empty($turnpoints)) {
+        throw new RuntimeException('Voeg taakpunten toe voordat je Skytraxx/Burnair tracks zoekt.');
+    }
+
+    $bbox = scoring_task_bbox($turnpoints);
+    $openTs = (new DateTimeImmutable((string)$task['window_open_at'], scoring_utc_timezone()))->getTimestamp();
+    $closeTs = (new DateTimeImmutable((string)$task['window_close_at'], scoring_utc_timezone()))->getTimestamp();
+    $summary = [
+        'profiles_checked' => 0,
+        'direct_downloads_checked' => 0,
+        'direct_matches' => 0,
+        'replay_tracks_checked' => 0,
+        'replay_matches' => 0,
+        'candidates' => 0,
+        'imported' => 0,
+        'already_linked' => 0,
+        'errors' => 0,
+        'messages' => [],
+        'direct_igc_configured' => scoring_burnair_igc_url_template() !== '' ? 1 : 0,
+        'public_livetracking_enabled' => scoring_burnair_public_livetracking_enabled() ? 1 : 0,
+    ];
+
+    $profileStmt = $pdo->query(
+        "SELECT id, display_name, email, skytraxx_device_id
+         FROM rankings_track_collection_profiles
+         WHERE skytraxx_enabled = 1
+           AND email_verified_at IS NOT NULL
+           AND skytraxx_device_id IS NOT NULL
+           AND skytraxx_device_id <> ''
+         ORDER BY display_name ASC"
+    );
+    $profiles = $profileStmt ? $profileStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+    foreach ($profiles as $profile) {
+        $summary['profiles_checked']++;
+        $profileId = (int)$profile['id'];
+        $deviceId = scoring_burnair_normalize_device_id((string)$profile['skytraxx_device_id']);
+        $pilotName = trim((string)$profile['display_name']);
+        if ($pilotName === '') {
+            $pilotName = 'Skytraxx ' . $deviceId;
+        }
+        try {
+            $importedForProfile = false;
+            $direct = null;
+            try {
+                if (scoring_burnair_igc_url_template() !== '') {
+                    $summary['direct_downloads_checked']++;
+                }
+                $direct = scoring_burnair_fetch_direct_igc($deviceId, $openTs, $closeTs);
+            } catch (Throwable $e) {
+                if (!scoring_burnair_public_livetracking_enabled()) {
+                    throw $e;
+                }
+                $summary['messages'][] = $pilotName . ' (' . $deviceId . ') directe IGC: ' . $e->getMessage();
+            }
+            if ($direct) {
+                try {
+                    $igc = scoring_parse_igc_file((string)$direct['path']);
+                    if (scoring_igc_metadata_intersects_task($igc, $task, $bbox)) {
+                        $summary['direct_matches']++;
+                        $externalId = 'igc-' . substr(preg_replace('/[^A-Z0-9_-]+/', '_', $deviceId) ?? $deviceId, 0, 80) . '-' . (string)$direct['hash'];
+                        scoring_burnair_import_file_candidate(
+                            $pdo,
+                            $task,
+                            'burnair_igc',
+                            $externalId,
+                            (string)$direct['url'],
+                            (string)$direct['path'],
+                            'burnair-skytraxx-' . $deviceId . '-' . gmdate('Ymd-His', $openTs) . '.igc',
+                            $pilotName,
+                            (string)$profile['email'],
+                            $summary
+                        );
+                        $importedForProfile = true;
+                    }
+                } finally {
+                    if (!empty($direct['path']) && is_file((string)$direct['path'])) {
+                        @unlink((string)$direct['path']);
+                    }
+                }
+            }
+
+            if (!$importedForProfile && scoring_burnair_public_livetracking_enabled()) {
+                $summary['replay_tracks_checked']++;
+                $points = scoring_burnair_fetch_livetracking_points($deviceId);
+                $points = scoring_burnair_points_for_task_window($points, $openTs, $closeTs, 3600);
+                if (count($points) >= 2 && scoring_burnair_points_intersect_bbox($points, $bbox)) {
+                    $summary['replay_matches']++;
+                    $tmpPath = null;
+                    try {
+                        $tmpPath = scoring_burnair_write_reconstructed_igc($points, $pilotName, $deviceId);
+                        $safeDeviceId = substr(preg_replace('/[^A-Z0-9_-]+/', '_', $deviceId) ?? $deviceId, 0, 80);
+                        $externalId = 'device' . $safeDeviceId . '-' . $openTs . '-' . $closeTs . '-' . scoring_burnair_trace_key($points);
+                        scoring_burnair_import_file_candidate(
+                            $pdo,
+                            $task,
+                            'burnair_livetracking_replay',
+                            $externalId,
+                            scoring_burnair_livetracking_tracks_url($deviceId),
+                            $tmpPath,
+                            'burnair-live-' . $deviceId . '-' . $openTs . '-' . $closeTs . '.igc',
+                            $pilotName,
+                            (string)$profile['email'],
+                            $summary
+                        );
+                    } finally {
+                        if ($tmpPath && is_file($tmpPath)) {
+                            @unlink($tmpPath);
+                        }
+                    }
+                }
+            }
+
+            $pdo->prepare('UPDATE rankings_track_collection_profiles SET last_skytraxx_check_at = UTC_TIMESTAMP() WHERE id = ?')
+                ->execute([$profileId]);
+        } catch (Throwable $e) {
+            $summary['errors']++;
+            $summary['messages'][] = $pilotName . ' (' . $deviceId . '): ' . $e->getMessage();
+        }
+    }
+
+    return $summary;
+}
+
 function scoring_pilot_identities_available(PDO $pdo): bool {
     static $available = null;
     if ($available !== null) {
@@ -2936,7 +3515,7 @@ function scoring_tracklog_evidence_code(array $flight): string {
     }
 
     $source = strtolower(trim((string)($flight['source'] ?? 'manual_upload')));
-    if (in_array($source, ['flymaster_replay', 'livetrack24'], true)) {
+    if (scoring_tracklog_source_is_live_reconstruction($source)) {
         return 'LT';
     }
 
@@ -3945,6 +4524,748 @@ function scoring_center_route_distance_km(array $turnpoints): float {
     return $distance;
 }
 
+function scoring_gap2025_normalize_longitude_deg(float $lon): float {
+    $lon = fmod($lon + 180.0, 360.0);
+    if ($lon < 0.0) {
+        $lon += 360.0;
+    }
+    return $lon - 180.0;
+}
+
+function scoring_gap2025_normalize_azimuth_deg(float $azimuth): float {
+    $azimuth = fmod($azimuth, 360.0);
+    if ($azimuth < 0.0) {
+        $azimuth += 360.0;
+    }
+    return $azimuth;
+}
+
+function scoring_gap2025_inverse_geodesic(float $lat1, float $lon1, float $lat2, float $lon2): array {
+    $a = 6378137.0;
+    $f = 1 / 298.257223563;
+    $b = (1 - $f) * $a;
+    $u1 = atan((1 - $f) * tan(deg2rad($lat1)));
+    $u2 = atan((1 - $f) * tan(deg2rad($lat2)));
+    $l = deg2rad($lon2 - $lon1);
+    $lambda = $l;
+    $lambdaPrevious = 0.0;
+    $sinSigma = 0.0;
+    $cosSigma = 0.0;
+    $sigma = 0.0;
+    $cosSqAlpha = 0.0;
+    $cos2SigmaM = 0.0;
+    $sinAlpha = 0.0;
+
+    for ($iter = 0; $iter < 100; $iter++) {
+        $sinLambda = sin($lambda);
+        $cosLambda = cos($lambda);
+        $sinSigma = sqrt(
+            pow(cos($u2) * $sinLambda, 2)
+            + pow(cos($u1) * sin($u2) - sin($u1) * cos($u2) * $cosLambda, 2)
+        );
+        if ($sinSigma == 0.0) {
+            return ['distance_m' => 0.0, 'initial_azimuth_deg' => 0.0, 'final_azimuth_deg' => 0.0];
+        }
+        $cosSigma = sin($u1) * sin($u2) + cos($u1) * cos($u2) * $cosLambda;
+        $sigma = atan2($sinSigma, $cosSigma);
+        $sinAlpha = cos($u1) * cos($u2) * $sinLambda / $sinSigma;
+        $cosSqAlpha = 1 - ($sinAlpha * $sinAlpha);
+        $cos2SigmaM = $cosSqAlpha == 0.0 ? 0.0 : $cosSigma - (2 * sin($u1) * sin($u2) / $cosSqAlpha);
+        $c = $f / 16 * $cosSqAlpha * (4 + $f * (4 - (3 * $cosSqAlpha)));
+        $lambdaPrevious = $lambda;
+        $lambda = $l + (1 - $c) * $f * $sinAlpha * (
+            $sigma + $c * $sinSigma * ($cos2SigmaM + $c * $cosSigma * (-1 + 2 * $cos2SigmaM * $cos2SigmaM))
+        );
+        if (abs($lambda - $lambdaPrevious) <= 1e-12) {
+            break;
+        }
+    }
+
+    if (abs($lambda - $lambdaPrevious) > 1e-9) {
+        $r = 6371008.8;
+        $phi1 = deg2rad($lat1);
+        $phi2 = deg2rad($lat2);
+        $dLon = deg2rad($lon2 - $lon1);
+        $dLat = $phi2 - $phi1;
+        $aa = sin($dLat / 2) * sin($dLat / 2)
+            + cos($phi1) * cos($phi2) * sin($dLon / 2) * sin($dLon / 2);
+        $distance = $r * 2 * atan2(sqrt($aa), sqrt(max(0.0, 1.0 - $aa)));
+        $bearing = atan2(
+            sin($dLon) * cos($phi2),
+            cos($phi1) * sin($phi2) - sin($phi1) * cos($phi2) * cos($dLon)
+        );
+        return [
+            'distance_m' => $distance,
+            'initial_azimuth_deg' => scoring_gap2025_normalize_azimuth_deg(rad2deg($bearing)),
+            'final_azimuth_deg' => scoring_gap2025_normalize_azimuth_deg(rad2deg($bearing) + 180.0),
+        ];
+    }
+
+    $uSq = $cosSqAlpha * (($a * $a) - ($b * $b)) / ($b * $b);
+    $aa = 1 + $uSq / 16384 * (4096 + $uSq * (-768 + $uSq * (320 - 175 * $uSq)));
+    $bb = $uSq / 1024 * (256 + $uSq * (-128 + $uSq * (74 - 47 * $uSq)));
+    $deltaSigma = $bb * $sinSigma * (
+        $cos2SigmaM + $bb / 4 * (
+            $cosSigma * (-1 + 2 * $cos2SigmaM * $cos2SigmaM)
+            - $bb / 6 * $cos2SigmaM * (-3 + 4 * $sinSigma * $sinSigma) * (-3 + 4 * $cos2SigmaM * $cos2SigmaM)
+        )
+    );
+    $distance = $b * $aa * ($sigma - $deltaSigma);
+    $alpha1 = atan2(
+        cos($u2) * sin($lambda),
+        cos($u1) * sin($u2) - sin($u1) * cos($u2) * cos($lambda)
+    );
+    $alpha2 = atan2(
+        cos($u1) * sin($lambda),
+        -sin($u1) * cos($u2) + cos($u1) * sin($u2) * cos($lambda)
+    );
+    return [
+        'distance_m' => $distance,
+        'initial_azimuth_deg' => scoring_gap2025_normalize_azimuth_deg(rad2deg($alpha1)),
+        'final_azimuth_deg' => scoring_gap2025_normalize_azimuth_deg(rad2deg($alpha2)),
+    ];
+}
+
+function scoring_gap2025_direct_geodesic(float $lat, float $lon, float $azimuthDeg, float $distanceM): array {
+    if (abs($distanceM) < 0.000001) {
+        return [
+            'lat' => $lat,
+            'lon' => scoring_gap2025_normalize_longitude_deg($lon),
+            'final_azimuth_deg' => scoring_gap2025_normalize_azimuth_deg($azimuthDeg),
+        ];
+    }
+
+    $a = 6378137.0;
+    $f = 1 / 298.257223563;
+    $b = (1 - $f) * $a;
+    $alpha1 = deg2rad(scoring_gap2025_normalize_azimuth_deg($azimuthDeg));
+    $sinAlpha1 = sin($alpha1);
+    $cosAlpha1 = cos($alpha1);
+    $tanU1 = (1 - $f) * tan(deg2rad($lat));
+    $cosU1 = 1 / sqrt(1 + ($tanU1 * $tanU1));
+    $sinU1 = $tanU1 * $cosU1;
+    $sigma1 = atan2($tanU1, $cosAlpha1);
+    $sinAlpha = $cosU1 * $sinAlpha1;
+    $cosSqAlpha = 1 - ($sinAlpha * $sinAlpha);
+    $uSq = $cosSqAlpha * (($a * $a) - ($b * $b)) / ($b * $b);
+    $aa = 1 + $uSq / 16384 * (4096 + $uSq * (-768 + $uSq * (320 - 175 * $uSq)));
+    $bb = $uSq / 1024 * (256 + $uSq * (-128 + $uSq * (74 - 47 * $uSq)));
+    $sigma = $distanceM / ($b * $aa);
+    $sigmaPrevious = 0.0;
+    $cos2SigmaM = 0.0;
+    $sinSigma = 0.0;
+    $cosSigma = 0.0;
+
+    for ($iter = 0; $iter < 100; $iter++) {
+        $cos2SigmaM = cos(2 * $sigma1 + $sigma);
+        $sinSigma = sin($sigma);
+        $cosSigma = cos($sigma);
+        $deltaSigma = $bb * $sinSigma * (
+            $cos2SigmaM + $bb / 4 * (
+                $cosSigma * (-1 + 2 * $cos2SigmaM * $cos2SigmaM)
+                - $bb / 6 * $cos2SigmaM * (-3 + 4 * $sinSigma * $sinSigma) * (-3 + 4 * $cos2SigmaM * $cos2SigmaM)
+            )
+        );
+        $sigmaPrevious = $sigma;
+        $sigma = $distanceM / ($b * $aa) + $deltaSigma;
+        if (abs($sigma - $sigmaPrevious) < 1e-12) {
+            break;
+        }
+    }
+
+    $tmp = $sinU1 * $sinSigma - $cosU1 * $cosSigma * $cosAlpha1;
+    $lat2 = atan2(
+        $sinU1 * $cosSigma + $cosU1 * $sinSigma * $cosAlpha1,
+        (1 - $f) * sqrt(($sinAlpha * $sinAlpha) + ($tmp * $tmp))
+    );
+    $lambda = atan2(
+        $sinSigma * $sinAlpha1,
+        $cosU1 * $cosSigma - $sinU1 * $sinSigma * $cosAlpha1
+    );
+    $c = $f / 16 * $cosSqAlpha * (4 + $f * (4 - 3 * $cosSqAlpha));
+    $l = $lambda - (1 - $c) * $f * $sinAlpha * (
+        $sigma + $c * $sinSigma * ($cos2SigmaM + $c * $cosSigma * (-1 + 2 * $cos2SigmaM * $cos2SigmaM))
+    );
+    $lon2 = deg2rad($lon) + $l;
+    $alpha2 = atan2($sinAlpha, -$tmp);
+    return [
+        'lat' => rad2deg($lat2),
+        'lon' => scoring_gap2025_normalize_longitude_deg(rad2deg($lon2)),
+        'final_azimuth_deg' => scoring_gap2025_normalize_azimuth_deg(rad2deg($alpha2)),
+    ];
+}
+
+function scoring_gap2025_ltm_context(array $centre): array {
+    $lat = max(-80.0, min(80.0, (float)$centre['lat']));
+    $lon = scoring_gap2025_normalize_longitude_deg((float)$centre['lon']);
+    $absLat = abs($lat);
+    $scaling = $absLat < 55.0 ? 0.99994 : 0.99994 + (($absLat - 55.0) / 60.0) * 1.3e-4;
+    $ctx = [
+        'centre_lat' => $lat,
+        'centre_lon' => $lon,
+        'centre_meridian_r' => deg2rad($lon),
+        'scaling' => $scaling,
+        'centre_northing' => 0.0,
+    ];
+    $raw = scoring_gap2025_ltm_raw_to_cartesian(deg2rad($lat), deg2rad($lon), $ctx);
+    $ctx['centre_northing'] = $raw['y'];
+    return $ctx;
+}
+
+function scoring_gap2025_ltm_raw_to_cartesian(float $latr, float $lonr, array $ctx): array {
+    $scaling = (float)$ctx['scaling'];
+    $meridianr = (float)$ctx['centre_meridian_r'];
+    $cla = cos($latr);
+    $cla2 = $cla * $cla;
+    $s2la = sin(2.0 * $latr);
+    $sdlo = sin($lonr - $meridianr);
+    $t = 0.5 * log((1.0 + $cla * $sdlo) / max(1e-15, 1.0 - $cla * $sdlo));
+    $k1 = 0.0820944379 * 0.0820944379;
+    $easting = $t * $scaling * 6399593.62 / sqrt(1.0 + $k1 * $cla2)
+        * (1.0 + ($k1 / 2.0) * $t * $t * $cla2 / 3.0);
+    $u = (3.0 * ($latr + $s2la / 2.0) + $s2la * $cla2) / 4.0;
+    $northing = (atan(tan($latr) / cos($lonr - $meridianr)) - $latr)
+        * $scaling * 6399593.625 / sqrt(1.0 + 0.006739496742 * $cla2)
+        * (1.0 + (0.006739496742 / 2.0) * $t * $t * $cla2)
+        + $scaling * 6399593.625 * (
+            $latr
+            - 0.005054622556 * ($latr + $s2la / 2.0)
+            + 4.258201531e-5 * $u
+            - 1.674057895e-7 * (5.0 * $u + $s2la * $cla2 * $cla2) / 3.0
+        );
+    return ['x' => $easting, 'y' => $northing];
+}
+
+function scoring_gap2025_geodesic_to_cartesian(float $lat, float $lon, array $ctx): array {
+    $adjustedLon = $lon;
+    if ((float)$ctx['centre_lon'] > 176.0 && $lon < 0.0) {
+        $adjustedLon = $lon + 360.0;
+    } elseif ((float)$ctx['centre_lon'] < -176.0 && $lon > 0.0) {
+        $adjustedLon = $lon - 360.0;
+    }
+    $raw = scoring_gap2025_ltm_raw_to_cartesian(deg2rad($lat), deg2rad($adjustedLon), $ctx);
+    return ['x' => $raw['x'], 'y' => $raw['y'] - (float)$ctx['centre_northing']];
+}
+
+function scoring_gap2025_cartesian_to_geodesic(float $x, float $y, array $ctx): array {
+    $scaling = (float)$ctx['scaling'];
+    $northing = (float)$ctx['centre_northing'] + $y;
+    $north = abs($northing);
+    $k1 = $north / 6366197.724 / $scaling;
+    $ck1 = cos($k1);
+    $ck1_2 = $ck1 * $ck1;
+    $k1a = 0.006739496742 * $ck1_2;
+    $k1b = 0.006739496742 * 3.0 / 4.0;
+    $s2k1 = sin(2.0 * $k1);
+    $k2 = sqrt(1.0 + $k1a);
+    $k3 = $scaling * 6399593.625 / $k2;
+    $k3a = $x / max(1e-12, $k3);
+    $k3b = $k1a * $k3a * $k3a / 2.0;
+    $k4 = 1.0 - $k3b;
+    $k5 = 1.0 - $k3b / 3.0;
+    $k6 = 3.0 * ($k1 + $s2k1 / 2.0) + $s2k1 * $ck1_2;
+    $k7 = ($north - $scaling * 6399593.625 * (
+        $k1 - $k1b * ($k1 + $s2k1 / 2.0)
+        + $k1b * $k1b * $k6 * 5.0 / 3.0 / 4.0
+        - $k1b * $k1b * $k1b * 35.0 / 27.0 * ($k6 * 5.0 / 4.0 + $s2k1 * $ck1_2 * $ck1_2) / 3.0
+    )) / max(1e-12, $k3) * $k4 + $k1;
+    $lonr = atan((exp($x / max(1e-12, $k3) * $k5) - exp(-$x / max(1e-12, $k3) * $k5)) / 2.0 / max(1e-12, cos($k7)));
+    $k10 = atan(cos($lonr) * tan($k7)) - $k1;
+    $latr = $k1 + (1.0 + $k1a - 0.006739496742 * sin($k1) * $ck1 * $k10 * 3.0 / 2.0) * $k10;
+    if ($northing < 0.0) {
+        $latr = -$latr;
+    }
+    return [
+        'lat' => rad2deg($latr),
+        'lon' => scoring_gap2025_normalize_longitude_deg(rad2deg($lonr + (float)$ctx['centre_meridian_r'])),
+    ];
+}
+
+function scoring_gap2025_zone_type(array $turnpoint): string {
+    $type = strtolower(trim((string)($turnpoint['control_zone_type'] ?? 'cylinder')));
+    return in_array($type, ['cylinder', 'line', 'goal_line'], true) ? $type : 'cylinder';
+}
+
+function scoring_gap2025_input_zone_type($value): string {
+    $type = strtolower(trim((string)$value));
+    return in_array($type, ['cylinder', 'line', 'goal_line'], true) ? $type : 'cylinder';
+}
+
+function scoring_gap2025_input_line_orientation_deg($value): ?float {
+    $orientation = scoring_decimal_or_null($value);
+    if ($orientation === null) {
+        return null;
+    }
+    return round(scoring_gap2025_normalize_azimuth_deg($orientation), 2);
+}
+
+function scoring_gap2025_input_line_offset_km($value): float {
+    $offset = scoring_decimal_or_null($value);
+    if ($offset === null) {
+        return 0.0;
+    }
+    return round(max(-100.0, min(100.0, $offset)), 3);
+}
+
+function scoring_gap2025_input_line_half_length_km($value): float {
+    $length = scoring_decimal_or_null($value);
+    if ($length === null) {
+        return 1.0;
+    }
+    return round(max(0.1, min(50.0, $length)), 3);
+}
+
+function scoring_gap2025_input_goal_line_length_m($value): int {
+    return max(50, min(50000, (int)round((float)($value ?? 400))));
+}
+
+function scoring_gap2025_line_definition(array $turnpoint): array {
+    $lat = (float)$turnpoint['latitude'];
+    $lon = (float)$turnpoint['longitude'];
+    $orientation = scoring_decimal_or_null($turnpoint['line_orientation_deg'] ?? null);
+    $orientation = $orientation === null ? 0.0 : scoring_gap2025_normalize_azimuth_deg($orientation);
+    $offsetM = max(-100000.0, min(100000.0, (float)($turnpoint['line_offset_km'] ?? 0.0) * 1000.0));
+    $halfLengthM = max(100.0, min(50000.0, (float)($turnpoint['line_half_length_km'] ?? 1.0) * 1000.0));
+    $centre = ['lat' => $lat, 'lon' => $lon];
+    $lineAzimuth = $orientation;
+
+    if (abs($offsetM) > 0.000001) {
+        $travelAzimuth = $offsetM < 0.0 ? scoring_gap2025_normalize_azimuth_deg($orientation + 180.0) : $orientation;
+        $direct = scoring_gap2025_direct_geodesic($lat, $lon, $travelAzimuth, abs($offsetM));
+        $centre = ['lat' => $direct['lat'], 'lon' => $direct['lon']];
+        $lineAzimuth = scoring_gap2025_normalize_azimuth_deg((float)$direct['final_azimuth_deg'] + 90.0);
+    } else {
+        $lineAzimuth = scoring_gap2025_normalize_azimuth_deg($orientation + 90.0);
+    }
+
+    $p1 = scoring_gap2025_direct_geodesic($centre['lat'], $centre['lon'], $lineAzimuth, $halfLengthM);
+    $p2 = scoring_gap2025_direct_geodesic($centre['lat'], $centre['lon'], scoring_gap2025_normalize_azimuth_deg($lineAzimuth + 180.0), $halfLengthM);
+    return [
+        'centre' => $centre,
+        'p1' => ['lat' => $p1['lat'], 'lon' => $p1['lon']],
+        'p2' => ['lat' => $p2['lat'], 'lon' => $p2['lon']],
+        'half_length_m' => $halfLengthM,
+        'offset_m' => $offsetM,
+        'line_azimuth_deg' => $lineAzimuth,
+    ];
+}
+
+function scoring_gap2025_goal_line_definition(array $turnpoint, ?array $previousPoint): array {
+    $centre = ['lat' => (float)$turnpoint['latitude'], 'lon' => (float)$turnpoint['longitude']];
+    $lengthM = max(50.0, min(50000.0, (float)($turnpoint['goal_line_length_m'] ?? 400.0)));
+    if ($previousPoint === null) {
+        $previousPoint = $centre;
+    }
+    $inverse = scoring_gap2025_inverse_geodesic(
+        (float)$previousPoint['lat'],
+        (float)$previousPoint['lon'],
+        $centre['lat'],
+        $centre['lon']
+    );
+    $lastLegAzimuth = (float)$inverse['initial_azimuth_deg'];
+    $lineAzimuth = scoring_gap2025_normalize_azimuth_deg($lastLegAzimuth + 90.0);
+    $p1 = scoring_gap2025_direct_geodesic($centre['lat'], $centre['lon'], $lineAzimuth, $lengthM / 2.0);
+    $p2 = scoring_gap2025_direct_geodesic($centre['lat'], $centre['lon'], scoring_gap2025_normalize_azimuth_deg($lineAzimuth + 180.0), $lengthM / 2.0);
+    return [
+        'centre' => $centre,
+        'p1' => ['lat' => $p1['lat'], 'lon' => $p1['lon']],
+        'p2' => ['lat' => $p2['lat'], 'lon' => $p2['lon']],
+        'previous' => $previousPoint,
+        'half_length_m' => $lengthM / 2.0,
+        'line_azimuth_deg' => $lineAzimuth,
+        'radius_m' => max(0.0, (float)($turnpoint['radius_m'] ?? 0.0)),
+    ];
+}
+
+function scoring_gap2025_route_elements(array $turnpoints, array $previousOptimizedPoints = []): array {
+    $elements = [];
+    foreach ($turnpoints as $idx => $tp) {
+        $point = ['lat' => (float)$tp['latitude'], 'lon' => (float)$tp['longitude']];
+        if ($idx === 0) {
+            $elements[] = ['type' => 'point', 'point' => $point, 'source_index' => $idx];
+            continue;
+        }
+        $type = scoring_gap2025_zone_type($tp);
+        if ($type === 'line') {
+            $line = scoring_gap2025_line_definition($tp);
+            $elements[] = [
+                'type' => 'line',
+                'point' => $line['centre'],
+                'p1' => $line['p1'],
+                'p2' => $line['p2'],
+                'half_length_m' => $line['half_length_m'],
+                'offset_m' => $line['offset_m'],
+                'source_index' => $idx,
+            ];
+            continue;
+        }
+        if ($type === 'goal_line') {
+            $previous = $previousOptimizedPoints[$idx - 1] ?? null;
+            if ($previous === null && isset($turnpoints[$idx - 1])) {
+                $previous = ['lat' => (float)$turnpoints[$idx - 1]['latitude'], 'lon' => (float)$turnpoints[$idx - 1]['longitude']];
+            }
+            $line = scoring_gap2025_goal_line_definition($tp, $previous);
+            $elements[] = [
+                'type' => 'goal_line',
+                'point' => $line['centre'],
+                'p1' => $line['p1'],
+                'p2' => $line['p2'],
+                'half_length_m' => $line['half_length_m'],
+                'radius_m' => $line['radius_m'],
+                'source_index' => $idx,
+            ];
+            continue;
+        }
+        $elements[] = [
+            'type' => 'cylinder',
+            'point' => $point,
+            'radius_m' => max(0.0, (float)($tp['radius_m'] ?? 0.0)),
+            'source_index' => $idx,
+        ];
+    }
+    return $elements;
+}
+
+function scoring_gap2025_route_definition_points(array $elements): array {
+    $points = [];
+    foreach ($elements as $element) {
+        if (isset($element['point'])) {
+            $points[] = $element['point'];
+        }
+        if (($element['type'] ?? '') === 'line' || ($element['type'] ?? '') === 'goal_line') {
+            $points[] = $element['p1'];
+            $points[] = $element['p2'];
+        }
+    }
+    return $points;
+}
+
+function scoring_gap2025_bounding_box_centre(array $points): array {
+    if (empty($points)) {
+        return ['lat' => 0.0, 'lon' => 0.0];
+    }
+    $minLat = min(array_map(static function ($p) { return (float)$p['lat']; }, $points));
+    $maxLat = max(array_map(static function ($p) { return (float)$p['lat']; }, $points));
+    $lons = array_map(static function ($p) {
+        return scoring_gap2025_normalize_longitude_deg((float)$p['lon']);
+    }, $points);
+    sort($lons, SORT_NUMERIC);
+    $minLon = $lons[0];
+    $maxLon = $lons[count($lons) - 1];
+    if (count($lons) > 1) {
+        $bestGap = -1.0;
+        $bestIdx = 0;
+        for ($i = 1; $i < count($lons); $i++) {
+            $gap = $lons[$i] - $lons[$i - 1];
+            if ($gap > $bestGap) {
+                $bestGap = $gap;
+                $bestIdx = $i - 1;
+            }
+        }
+        $wrapGap = ($lons[0] + 360.0) - $lons[count($lons) - 1];
+        if ($wrapGap > $bestGap && $wrapGap > 180.0) {
+            $minLon = $lons[0];
+            $maxLon = $lons[count($lons) - 1];
+        } elseif ($bestGap > 180.0) {
+            $minLon = $lons[$bestIdx + 1];
+            $maxLon = $lons[$bestIdx];
+        }
+    }
+    $lat = ($minLat + $maxLat) / 2.0;
+    if ($minLon > $maxLon) {
+        $lon = fmod(($minLon + $maxLon + 360.0) / 2.0, 360.0);
+        if ($lon > 180.0) {
+            $lon -= 360.0;
+        }
+    } else {
+        $lon = ($minLon + $maxLon) / 2.0;
+    }
+    return ['lat' => $lat, 'lon' => scoring_gap2025_normalize_longitude_deg($lon)];
+}
+
+function scoring_gap2025_cart_distance(array $a, array $b): float {
+    return hypot((float)$a['x'] - (float)$b['x'], (float)$a['y'] - (float)$b['y']);
+}
+
+function scoring_gap2025_closest_point_on_segment(array $p, array $a, array $b): array {
+    $vx = (float)$b['x'] - (float)$a['x'];
+    $vy = (float)$b['y'] - (float)$a['y'];
+    $len2 = ($vx * $vx) + ($vy * $vy);
+    if ($len2 <= 1e-12) {
+        return ['x' => (float)$a['x'], 'y' => (float)$a['y'], 't' => 0.0];
+    }
+    $t = (((float)$p['x'] - (float)$a['x']) * $vx + ((float)$p['y'] - (float)$a['y']) * $vy) / $len2;
+    $t = max(0.0, min(1.0, $t));
+    return ['x' => (float)$a['x'] + $t * $vx, 'y' => (float)$a['y'] + $t * $vy, 't' => $t];
+}
+
+function scoring_gap2025_closest_point_on_line(array $p, array $a, array $b): array {
+    $vx = (float)$b['x'] - (float)$a['x'];
+    $vy = (float)$b['y'] - (float)$a['y'];
+    $len2 = ($vx * $vx) + ($vy * $vy);
+    if ($len2 <= 1e-12) {
+        return ['x' => (float)$a['x'], 'y' => (float)$a['y'], 't' => 0.0];
+    }
+    $t = (((float)$p['x'] - (float)$a['x']) * $vx + ((float)$p['y'] - (float)$a['y']) * $vy) / $len2;
+    return ['x' => (float)$a['x'] + $t * $vx, 'y' => (float)$a['y'] + $t * $vy, 't' => $t];
+}
+
+function scoring_gap2025_segment_intersection(array $a, array $b, array $c, array $d): ?array {
+    $rx = (float)$b['x'] - (float)$a['x'];
+    $ry = (float)$b['y'] - (float)$a['y'];
+    $sx = (float)$d['x'] - (float)$c['x'];
+    $sy = (float)$d['y'] - (float)$c['y'];
+    $den = ($rx * $sy) - ($ry * $sx);
+    if (abs($den) < 1e-9) {
+        return null;
+    }
+    $qx = (float)$c['x'] - (float)$a['x'];
+    $qy = (float)$c['y'] - (float)$a['y'];
+    $t = ($qx * $sy - $qy * $sx) / $den;
+    $u = ($qx * $ry - $qy * $rx) / $den;
+    if ($t < -1e-9 || $t > 1.0 + 1e-9 || $u < -1e-9 || $u > 1.0 + 1e-9) {
+        return null;
+    }
+    $t = max(0.0, min(1.0, $t));
+    return ['x' => (float)$a['x'] + $t * $rx, 'y' => (float)$a['y'] + $t * $ry, 't' => $t];
+}
+
+function scoring_gap2025_reflect_point_over_line(array $p, array $a, array $b): array {
+    $closest = scoring_gap2025_closest_point_on_line($p, $a, $b);
+    return [
+        'x' => 2.0 * (float)$closest['x'] - (float)$p['x'],
+        'y' => 2.0 * (float)$closest['y'] - (float)$p['y'],
+    ];
+}
+
+function scoring_gap2025_segment_circle_intersections(array $a, array $b, array $centre, float $radius): array {
+    if ($radius <= 0.0) {
+        return [];
+    }
+    $dx = (float)$b['x'] - (float)$a['x'];
+    $dy = (float)$b['y'] - (float)$a['y'];
+    $fx = (float)$a['x'] - (float)$centre['x'];
+    $fy = (float)$a['y'] - (float)$centre['y'];
+    $aa = ($dx * $dx) + ($dy * $dy);
+    if ($aa <= 1e-12) {
+        return [];
+    }
+    $bb = 2.0 * (($fx * $dx) + ($fy * $dy));
+    $cc = ($fx * $fx) + ($fy * $fy) - ($radius * $radius);
+    $disc = ($bb * $bb) - 4.0 * $aa * $cc;
+    if ($disc < -1e-9) {
+        return [];
+    }
+    $disc = sqrt(max(0.0, $disc));
+    $points = [];
+    foreach ([(-$bb - $disc) / (2.0 * $aa), (-$bb + $disc) / (2.0 * $aa)] as $t) {
+        if ($t >= -1e-9 && $t <= 1.0 + 1e-9) {
+            $t = max(0.0, min(1.0, $t));
+            $points[] = ['x' => (float)$a['x'] + $t * $dx, 'y' => (float)$a['y'] + $t * $dy, 't' => $t];
+        }
+    }
+    usort($points, static function ($p1, $p2) {
+        return ((float)$p1['t'] <=> (float)$p2['t']);
+    });
+    return $points;
+}
+
+function scoring_gap2025_line_path_point(array $zone, array $previous, ?array $next): array {
+    $p1 = $zone['p1'];
+    $p2 = $zone['p2'];
+    if ($next === null) {
+        return scoring_gap2025_closest_point_on_segment($previous, $p1, $p2);
+    }
+    $intersection = scoring_gap2025_segment_intersection($previous, $next, $p1, $p2);
+    if ($intersection !== null) {
+        return $intersection;
+    }
+    $reflectedNext = scoring_gap2025_reflect_point_over_line($next, $p1, $p2);
+    $intersection = scoring_gap2025_segment_intersection($previous, $reflectedNext, $p1, $p2);
+    if ($intersection !== null) {
+        return $intersection;
+    }
+    $viaP1 = scoring_gap2025_cart_distance($previous, $p1) + scoring_gap2025_cart_distance($p1, $next);
+    $viaP2 = scoring_gap2025_cart_distance($previous, $p2) + scoring_gap2025_cart_distance($p2, $next);
+    return $viaP1 <= $viaP2 ? $p1 : $p2;
+}
+
+function scoring_gap2025_cylinder_path_point(array $zone, array $previous, ?array $next): array {
+    $centre = $zone['point'];
+    $radius = max(0.0, (float)($zone['radius_m'] ?? 0.0));
+    if ($radius <= 0.0) {
+        return $centre;
+    }
+    if ($next !== null) {
+        $intersections = scoring_gap2025_segment_circle_intersections($previous, $next, $centre, $radius);
+        if (!empty($intersections)) {
+            return $intersections[0];
+        }
+    }
+
+    $objective = static function (float $angle) use ($centre, $radius, $previous, $next): float {
+        $p = ['x' => (float)$centre['x'] + $radius * cos($angle), 'y' => (float)$centre['y'] + $radius * sin($angle)];
+        $distance = scoring_gap2025_cart_distance($previous, $p);
+        if ($next !== null) {
+            $distance += scoring_gap2025_cart_distance($p, $next);
+        }
+        return $distance;
+    };
+
+    $bestAngle = atan2((float)$previous['y'] - (float)$centre['y'], (float)$previous['x'] - (float)$centre['x']);
+    $bestDistance = $objective($bestAngle);
+    if ($next !== null) {
+        $angleNext = atan2((float)$next['y'] - (float)$centre['y'], (float)$next['x'] - (float)$centre['x']);
+        $distanceNext = $objective($angleNext);
+        if ($distanceNext < $bestDistance) {
+            $bestDistance = $distanceNext;
+            $bestAngle = $angleNext;
+        }
+    }
+
+    $segments = 24;
+    $twoPi = 2.0 * pi();
+    for ($segment = 0; $segment < $segments; $segment++) {
+        $lo = $segment * $twoPi / $segments;
+        $hi = ($segment + 1) * $twoPi / $segments;
+        for ($iter = 0; $iter < 36; $iter++) {
+            $m1 = $lo + ($hi - $lo) / 3.0;
+            $m2 = $hi - ($hi - $lo) / 3.0;
+            if ($objective($m1) < $objective($m2)) {
+                $hi = $m2;
+            } else {
+                $lo = $m1;
+            }
+        }
+        $angle = ($lo + $hi) / 2.0;
+        $distance = $objective($angle);
+        if ($distance < $bestDistance) {
+            $bestDistance = $distance;
+            $bestAngle = $angle;
+        }
+    }
+
+    return ['x' => (float)$centre['x'] + $radius * cos($bestAngle), 'y' => (float)$centre['y'] + $radius * sin($bestAngle)];
+}
+
+function scoring_gap2025_pathfinder(array $cartesianElements): array {
+    $count = count($cartesianElements);
+    if ($count === 0) {
+        return [];
+    }
+    $path = [];
+    $path[0] = $cartesianElements[0]['point'];
+    for ($i = 1; $i < $count; $i++) {
+        $zone = $cartesianElements[$i];
+        $previous = $path[$i - 1];
+        if (($zone['type'] ?? '') === 'line' || ($zone['type'] ?? '') === 'goal_line') {
+            $path[$i] = scoring_gap2025_closest_point_on_segment($previous, $zone['p1'], $zone['p2']);
+        } elseif (($zone['type'] ?? '') === 'cylinder') {
+            $path[$i] = scoring_gap2025_cylinder_path_point($zone, $previous, null);
+        } else {
+            $path[$i] = $zone['point'];
+        }
+    }
+
+    for ($iter = 0; $iter < 200; $iter++) {
+        $maxMove = 0.0;
+        for ($i = 1; $i < $count; $i++) {
+            $zone = $cartesianElements[$i];
+            $old = $path[$i];
+            $previous = $path[$i - 1];
+            $next = $path[$i + 1] ?? null;
+            if (($zone['type'] ?? '') === 'line' || ($zone['type'] ?? '') === 'goal_line') {
+                $new = scoring_gap2025_line_path_point($zone, $previous, $next);
+            } elseif (($zone['type'] ?? '') === 'cylinder') {
+                $new = scoring_gap2025_cylinder_path_point($zone, $previous, $next);
+            } else {
+                $new = $zone['point'];
+            }
+            $path[$i] = $new;
+            $maxMove = max($maxMove, scoring_gap2025_cart_distance($old, $new));
+        }
+        if ($maxMove <= 0.1) {
+            break;
+        }
+    }
+    return $path;
+}
+
+function scoring_gap2025_project_path_to_geodesic(array $cartesianPath, array $cartesianElements, array $elements, array $ctx): array {
+    $path = [];
+    foreach ($cartesianPath as $idx => $point) {
+        $element = $elements[$idx] ?? ['type' => 'point'];
+        if (($element['type'] ?? '') === 'point') {
+            $path[$idx] = $element['point'];
+            continue;
+        }
+        if (($element['type'] ?? '') === 'cylinder') {
+            $centre = $element['point'];
+            $radius = max(0.0, (float)($element['radius_m'] ?? 0.0));
+            if ($radius <= 0.0) {
+                $path[$idx] = $centre;
+                continue;
+            }
+            $rough = scoring_gap2025_cartesian_to_geodesic((float)$point['x'], (float)$point['y'], $ctx);
+            $inverse = scoring_gap2025_inverse_geodesic($centre['lat'], $centre['lon'], $rough['lat'], $rough['lon']);
+            $corrected = scoring_gap2025_direct_geodesic($centre['lat'], $centre['lon'], (float)$inverse['initial_azimuth_deg'], $radius);
+            $path[$idx] = ['lat' => $corrected['lat'], 'lon' => $corrected['lon']];
+            continue;
+        }
+        if (($element['type'] ?? '') === 'line' || ($element['type'] ?? '') === 'goal_line') {
+            $cart = $cartesianElements[$idx];
+            $closest = scoring_gap2025_closest_point_on_segment($point, $cart['p1'], $cart['p2']);
+            $path[$idx] = scoring_gap2025_cartesian_to_geodesic((float)$closest['x'], (float)$closest['y'], $ctx);
+            continue;
+        }
+        $path[$idx] = scoring_gap2025_cartesian_to_geodesic((float)$point['x'], (float)$point['y'], $ctx);
+    }
+    return $path;
+}
+
+function scoring_gap2025_route_optimizer(array $elements, array $taskAreaCentre): array {
+    $ctx = scoring_gap2025_ltm_context($taskAreaCentre);
+    $cartesian = [];
+    foreach ($elements as $element) {
+        if (($element['type'] ?? '') === 'line' || ($element['type'] ?? '') === 'goal_line') {
+            $p1 = scoring_gap2025_geodesic_to_cartesian((float)$element['p1']['lat'], (float)$element['p1']['lon'], $ctx);
+            $p2 = scoring_gap2025_geodesic_to_cartesian((float)$element['p2']['lat'], (float)$element['p2']['lon'], $ctx);
+            $centre = scoring_gap2025_geodesic_to_cartesian((float)$element['point']['lat'], (float)$element['point']['lon'], $ctx);
+            $cartElement = $element;
+            $cartElement['point'] = $centre;
+            $cartElement['p1'] = $p1;
+            $cartElement['p2'] = $p2;
+            $cartesian[] = $cartElement;
+        } else {
+            $point = scoring_gap2025_geodesic_to_cartesian((float)$element['point']['lat'], (float)$element['point']['lon'], $ctx);
+            $cartElement = $element;
+            $cartElement['point'] = $point;
+            $cartesian[] = $cartElement;
+        }
+    }
+    $cartesianPath = scoring_gap2025_pathfinder($cartesian);
+    $geodesicPath = scoring_gap2025_project_path_to_geodesic($cartesianPath, $cartesian, $elements, $ctx);
+    $cumulative = [0.0];
+    $distance = 0.0;
+    for ($i = 1; $i < count($geodesicPath); $i++) {
+        $distance += scoring_haversine_km(
+            (float)$geodesicPath[$i - 1]['lat'],
+            (float)$geodesicPath[$i - 1]['lon'],
+            (float)$geodesicPath[$i]['lat'],
+            (float)$geodesicPath[$i]['lon']
+        );
+        $cumulative[$i] = $distance;
+    }
+    return [
+        'distance' => $distance,
+        'cumulative' => $cumulative,
+        'geodesic_path' => $geodesicPath,
+        'cartesian_path' => $cartesianPath,
+        'task_area_centre' => $taskAreaCentre,
+        'elements' => $elements,
+    ];
+}
+
 function scoring_optimised_route_metrics(array $turnpoints): array {
     $count = count($turnpoints);
     if ($count < 2) {
@@ -3952,7 +5273,16 @@ function scoring_optimised_route_metrics(array $turnpoints): array {
         foreach ($turnpoints as $tp) {
             $path[] = [round((float)$tp['latitude'], 7), round((float)$tp['longitude'], 7)];
         }
-        return ['distance' => 0.0, 'cumulative' => array_fill(0, $count, 0.0), 'path' => $path];
+        return [
+            'distance' => 0.0,
+            'cumulative' => array_fill(0, $count, 0.0),
+            'path' => $path,
+            'geodesic_path' => array_map(static function ($tp) {
+                return ['lat' => (float)$tp['latitude'], 'lon' => (float)$tp['longitude']];
+            }, $turnpoints),
+            'task_area_centre' => $count === 1 ? ['lat' => (float)$turnpoints[0]['latitude'], 'lon' => (float)$turnpoints[0]['longitude']] : ['lat' => 0.0, 'lon' => 0.0],
+            'elements' => scoring_gap2025_route_elements($turnpoints),
+        ];
     }
 
     static $cache = [];
@@ -3960,150 +5290,33 @@ function scoring_optimised_route_metrics(array $turnpoints): array {
         return [
             round((float)$tp['latitude'], 7),
             round((float)$tp['longitude'], 7),
-            round(((float)($tp['radius_m'] ?? 0)) / 1000.0, 3),
+            scoring_gap2025_zone_type($tp),
+            round(((float)($tp['radius_m'] ?? 0)), 3),
+            round(((float)($tp['line_orientation_deg'] ?? 0)), 3),
+            round(((float)($tp['line_offset_km'] ?? 0)), 4),
+            round(((float)($tp['line_half_length_km'] ?? 1)), 4),
+            round(((float)($tp['goal_line_length_m'] ?? 400)), 3),
         ];
     }, $turnpoints)));
     if (isset($cache[$cacheKey])) {
         return $cache[$cacheKey];
     }
 
-    $latSum = 0.0;
-    foreach ($turnpoints as $tp) {
-        $latSum += (float)$tp['latitude'];
+    $initialElements = scoring_gap2025_route_elements($turnpoints);
+    $initialCentre = scoring_gap2025_bounding_box_centre(scoring_gap2025_route_definition_points($initialElements));
+    $temporary = scoring_gap2025_route_optimizer($initialElements, $initialCentre);
+    $previousOptimized = [];
+    foreach ($temporary['geodesic_path'] as $idx => $point) {
+        $previousOptimized[$idx] = $point;
     }
-    $lat0 = deg2rad($latSum / $count);
-    $lonRef = (float)$turnpoints[0]['longitude'];
-    $latRef = (float)$turnpoints[0]['latitude'];
-    $a = 6378.137;
-    $f = 1 / 298.257223563;
-    $e2 = $f * (2 - $f);
-    $sinLat = sin($lat0);
-    $m = $a * (1 - $e2) / pow(1 - ($e2 * $sinLat * $sinLat), 1.5);
-    $n = $a / sqrt(1 - ($e2 * $sinLat * $sinLat));
-    $xScale = $n * cos($lat0) * (pi() / 180.0);
-    $yScale = $m * (pi() / 180.0);
+    $finalElements = scoring_gap2025_route_elements($turnpoints, $previousOptimized);
+    $finalCentre = scoring_gap2025_bounding_box_centre($temporary['geodesic_path']);
+    $result = scoring_gap2025_route_optimizer($finalElements, $finalCentre);
+    $routePath = array_map(static function ($point) {
+        return [round((float)$point['lat'], 7), round((float)$point['lon'], 7)];
+    }, $result['geodesic_path']);
 
-    $points = [];
-    foreach ($turnpoints as $tp) {
-        $points[] = [
-            'x' => ((float)$tp['longitude'] - $lonRef) * $xScale,
-            'y' => ((float)$tp['latitude'] - $latRef) * $yScale,
-            'r' => max(0.0, ((float)($tp['radius_m'] ?? 0)) / 1000.0),
-        ];
-    }
-
-    $pathDistance = function (array $angles) use ($points, $count): float {
-        $path = [];
-        for ($i = 0; $i < $count; $i++) {
-            if ($i === 0 || $points[$i]['r'] <= 0.0) {
-                $path[$i] = ['x' => $points[$i]['x'], 'y' => $points[$i]['y']];
-            } else {
-                $path[$i] = [
-                    'x' => $points[$i]['x'] + ($points[$i]['r'] * cos($angles[$i])),
-                    'y' => $points[$i]['y'] + ($points[$i]['r'] * sin($angles[$i])),
-                ];
-            }
-        }
-        $distance = 0.0;
-        for ($i = 1; $i < $count; $i++) {
-            $distance += hypot($path[$i]['x'] - $path[$i - 1]['x'], $path[$i]['y'] - $path[$i - 1]['y']);
-        }
-        return $distance;
-    };
-
-    $seeds = [];
-    foreach (['previous', 'next', 'bisector', 'zero', 'quarter'] as $mode) {
-        $angles = array_fill(0, $count, 0.0);
-        for ($i = 1; $i < $count; $i++) {
-            $prev = $points[max(0, $i - 1)];
-            $next = $points[min($count - 1, $i + 1)];
-            if ($mode === 'previous') {
-                $angles[$i] = atan2($prev['y'] - $points[$i]['y'], $prev['x'] - $points[$i]['x']);
-            } elseif ($mode === 'next') {
-                $angles[$i] = atan2($next['y'] - $points[$i]['y'], $next['x'] - $points[$i]['x']);
-            } elseif ($mode === 'bisector') {
-                $v1x = $prev['x'] - $points[$i]['x'];
-                $v1y = $prev['y'] - $points[$i]['y'];
-                $v2x = $next['x'] - $points[$i]['x'];
-                $v2y = $next['y'] - $points[$i]['y'];
-                $l1 = max(0.000001, hypot($v1x, $v1y));
-                $l2 = max(0.000001, hypot($v2x, $v2y));
-                $angles[$i] = atan2(($v1y / $l1) + ($v2y / $l2), ($v1x / $l1) + ($v2x / $l2));
-            } elseif ($mode === 'quarter') {
-                $angles[$i] = pi() / 2.0;
-            }
-        }
-        $seeds[] = $angles;
-    }
-
-    $bestAngles = $seeds[0];
-    $bestDistance = PHP_FLOAT_MAX;
-    foreach ($seeds as $angles) {
-        $step = 1.0;
-        for ($iter = 0; $iter < 2000; $iter++) {
-            $improved = false;
-            for ($i = 1; $i < $count; $i++) {
-                if ($points[$i]['r'] <= 0.0) {
-                    continue;
-                }
-                $baseAngle = $angles[$i];
-                $baseDistance = $pathDistance($angles);
-                $chosenAngle = $baseAngle;
-                $chosenDistance = $baseDistance;
-                foreach ([-$step, $step] as $delta) {
-                    $angles[$i] = $baseAngle + $delta;
-                    $distance = $pathDistance($angles);
-                    if ($distance < $chosenDistance) {
-                        $chosenDistance = $distance;
-                        $chosenAngle = $angles[$i];
-                        $improved = true;
-                    }
-                }
-                $angles[$i] = $chosenAngle;
-            }
-            if (!$improved) {
-                $step *= 0.55;
-            }
-            if ($step < 1e-8) {
-                break;
-            }
-        }
-        $distance = $pathDistance($angles);
-        if ($distance < $bestDistance) {
-            $bestDistance = $distance;
-            $bestAngles = $angles;
-        }
-    }
-
-    $path = [];
-    for ($i = 0; $i < $count; $i++) {
-        if ($i === 0 || $points[$i]['r'] <= 0.0) {
-            $path[$i] = ['x' => $points[$i]['x'], 'y' => $points[$i]['y']];
-        } else {
-            $path[$i] = [
-                'x' => $points[$i]['x'] + ($points[$i]['r'] * cos($bestAngles[$i])),
-                'y' => $points[$i]['y'] + ($points[$i]['r'] * sin($bestAngles[$i])),
-            ];
-        }
-    }
-    $cumulative = [0.0];
-    for ($i = 1; $i < $count; $i++) {
-        $cumulative[$i] = $cumulative[$i - 1] + hypot($path[$i]['x'] - $path[$i - 1]['x'], $path[$i]['y'] - $path[$i - 1]['y']);
-    }
-
-    $safeXScale = abs($xScale) > 0.000000001 ? $xScale : 0.000000001;
-    $safeYScale = abs($yScale) > 0.000000001 ? $yScale : 0.000000001;
-    $routePath = [];
-    foreach ($path as $point) {
-        $routePath[] = [
-            round($latRef + ($point['y'] / $safeYScale), 7),
-            round($lonRef + ($point['x'] / $safeXScale), 7),
-        ];
-    }
-
-    $cache[$cacheKey] = [
-        'distance' => $cumulative[$count - 1],
-        'cumulative' => $cumulative,
+    $cache[$cacheKey] = $result + [
         'path' => $routePath,
     ];
     return $cache[$cacheKey];
@@ -4120,6 +5333,8 @@ function scoring_task_map_data(array $turnpoints): ?array {
 
     [$sssIndex, $essIndex] = scoring_speed_section_indices($turnpoints);
     $points = [];
+    $metrics = scoring_optimised_route_metrics($turnpoints);
+    $elements = $metrics['elements'] ?? scoring_gap2025_route_elements($turnpoints);
     foreach ($turnpoints as $idx => $tp) {
         $isSss = $idx === $sssIndex;
         $isEss = $idx === $essIndex;
@@ -4132,18 +5347,26 @@ function scoring_task_map_data(array $turnpoints): ?array {
             $role = 'ess';
         }
 
-        $points[] = [
+        $zoneType = $idx === 0 ? 'point' : scoring_gap2025_zone_type($tp);
+        $point = [
             'sequence' => (int)($tp['sequence_no'] ?? ($idx + 1)),
             'name' => (string)($tp['name'] ?? ('TP ' . ($idx + 1))),
             'code' => (string)($tp['code'] ?? ''),
             'lat' => round((float)$tp['latitude'], 7),
             'lon' => round((float)$tp['longitude'], 7),
             'radius_m' => max(0, (int)($tp['radius_m'] ?? 0)),
+            'zone_type' => $zoneType,
             'role' => $role,
         ];
+        if (($zoneType === 'line' || $zoneType === 'goal_line') && isset($elements[$idx]['p1'], $elements[$idx]['p2'])) {
+            $point['line'] = [
+                'p1' => [round((float)$elements[$idx]['p1']['lat'], 7), round((float)$elements[$idx]['p1']['lon'], 7)],
+                'p2' => [round((float)$elements[$idx]['p2']['lat'], 7), round((float)$elements[$idx]['p2']['lon'], 7)],
+            ];
+        }
+        $points[] = $point;
     }
 
-    $metrics = scoring_optimised_route_metrics($turnpoints);
     return [
         'turnpoints' => $points,
         'route' => $metrics['path'] ?? [],
@@ -4182,31 +5405,25 @@ function scoring_project_progress_km(float $lat, float $lon, array $route, array
     if (count($route) < 2) {
         return 0.0;
     }
-    $earth = 6371.0088;
+    $metrics = scoring_optimised_route_metrics($route);
+    $path = $metrics['geodesic_path'] ?? [];
+    if (count($path) < 2) {
+        return 0.0;
+    }
+    $cumulative = $metrics['cumulative'] ?? $cumulative;
+    $ctx = scoring_gap2025_ltm_context($metrics['task_area_centre'] ?? scoring_gap2025_bounding_box_centre($path));
+    $projectedFix = scoring_gap2025_geodesic_to_cartesian($lat, $lon, $ctx);
     $bestDistance = PHP_FLOAT_MAX;
     $bestProgress = 0.0;
-    for ($i = 1; $i < count($route); $i++) {
-        $a = $route[$i - 1];
-        $b = $route[$i];
-        $lat0 = deg2rad(((float)$a['latitude'] + (float)$b['latitude']) / 2.0);
-        $ax = deg2rad((float)$a['longitude']) * $earth * cos($lat0);
-        $ay = deg2rad((float)$a['latitude']) * $earth;
-        $bx = deg2rad((float)$b['longitude']) * $earth * cos($lat0);
-        $by = deg2rad((float)$b['latitude']) * $earth;
-        $px = deg2rad($lon) * $earth * cos($lat0);
-        $py = deg2rad($lat) * $earth;
-        $vx = $bx - $ax;
-        $vy = $by - $ay;
-        $wx = $px - $ax;
-        $wy = $py - $ay;
-        $len2 = max(0.000001, ($vx * $vx) + ($vy * $vy));
-        $t = max(0.0, min(1.0, (($wx * $vx) + ($wy * $vy)) / $len2));
-        $projX = $ax + ($t * $vx);
-        $projY = $ay + ($t * $vy);
-        $dist = sqrt((($px - $projX) * ($px - $projX)) + (($py - $projY) * ($py - $projY)));
+    for ($i = 1; $i < count($path); $i++) {
+        $a = scoring_gap2025_geodesic_to_cartesian((float)$path[$i - 1]['lat'], (float)$path[$i - 1]['lon'], $ctx);
+        $b = scoring_gap2025_geodesic_to_cartesian((float)$path[$i]['lat'], (float)$path[$i]['lon'], $ctx);
+        $projection = scoring_gap2025_closest_point_on_segment($projectedFix, $a, $b);
+        $dist = scoring_gap2025_cart_distance($projectedFix, $projection);
         if ($dist < $bestDistance) {
             $bestDistance = $dist;
-            $bestProgress = $cumulative[$i - 1] + ($t * max(0.0, $cumulative[$i] - $cumulative[$i - 1]));
+            $t = (float)($projection['t'] ?? 0.0);
+            $bestProgress = (float)($cumulative[$i - 1] ?? 0.0) + ($t * max(0.0, (float)($cumulative[$i] ?? 0.0) - (float)($cumulative[$i - 1] ?? 0.0)));
         }
     }
     return $bestProgress;
@@ -4346,6 +5563,11 @@ function scoring_ensure_publication_snapshot_tables(PDO $pdo): void {
           leading_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
           arrival_position_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
           arrival_time_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          raw_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          jump_the_gun_penalty_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          manual_penalty_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          manual_bonus_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
+          adjustment_reason VARCHAR(255) DEFAULT NULL,
           total_points DECIMAL(8,1) NOT NULL DEFAULT 0.0,
           rank_no INT UNSIGNED DEFAULT NULL,
           evaluation_json MEDIUMTEXT DEFAULT NULL,
@@ -4366,6 +5588,21 @@ function scoring_ensure_publication_snapshot_tables(PDO $pdo): void {
     }
     if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_public_results', 'evidence_code')) {
         scoring_exec_schema_change($pdo, "ALTER TABLE rankings_scoring_task_public_results ADD COLUMN evidence_code VARCHAR(10) NOT NULL DEFAULT 'LOG' AFTER result_status", [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_public_results', 'raw_points')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_public_results ADD COLUMN raw_points DECIMAL(8,1) NOT NULL DEFAULT 0.0 AFTER arrival_time_points', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_public_results', 'jump_the_gun_penalty_points')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_public_results ADD COLUMN jump_the_gun_penalty_points DECIMAL(8,1) NOT NULL DEFAULT 0.0 AFTER raw_points', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_public_results', 'manual_penalty_points')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_public_results ADD COLUMN manual_penalty_points DECIMAL(8,1) NOT NULL DEFAULT 0.0 AFTER jump_the_gun_penalty_points', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_public_results', 'manual_bonus_points')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_public_results ADD COLUMN manual_bonus_points DECIMAL(8,1) NOT NULL DEFAULT 0.0 AFTER manual_penalty_points', [1060], ['42S21']);
+    }
+    if (!scoring_table_column_exists($pdo, 'rankings_scoring_task_public_results', 'adjustment_reason')) {
+        scoring_exec_schema_change($pdo, 'ALTER TABLE rankings_scoring_task_public_results ADD COLUMN adjustment_reason VARCHAR(255) DEFAULT NULL AFTER manual_bonus_points', [1060], ['42S21']);
     }
 }
 
@@ -4463,7 +5700,9 @@ function scoring_publish_task_results(PDO $pdo, int $taskId): array {
                     f.result_status, f.evidence_code,
                     f.distance_km, f.start_time_at, f.ess_time_at, f.goal_time_at, f.time_seconds,
                     f.reached_ess, f.reached_goal, f.distance_points, f.time_points, f.departure_points,
-                    f.leading_points, f.arrival_position_points, f.arrival_time_points, f.total_points,
+                    f.leading_points, f.arrival_position_points, f.arrival_time_points,
+                    f.raw_points, f.jump_the_gun_penalty_points, f.manual_penalty_points, f.manual_bonus_points, f.adjustment_reason,
+                    f.total_points,
                     f.rank_no, f.evaluation_json, f.scored_at,
                     tl.storage_path, tl.original_filename, tl.source, tl.validation_status
              FROM rankings_scoring_task_flights f
@@ -4485,13 +5724,15 @@ function scoring_publish_task_results(PDO $pdo, int $taskId): array {
         $pdo->prepare('DELETE FROM rankings_scoring_task_public_results WHERE task_id = ?')->execute([$taskId]);
         $insert = $pdo->prepare(
             'INSERT INTO rankings_scoring_task_public_results
-             (task_id, source_flight_id, pilot_name, pilot_email, pilot_identity_id,
-              result_status, evidence_code, distance_km, start_time_at, ess_time_at, goal_time_at, time_seconds,
-              reached_ess, reached_goal, distance_points, time_points, departure_points,
-              leading_points, arrival_position_points, arrival_time_points, total_points,
-              rank_no, evaluation_json, scored_at, published_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-        );
+	             (task_id, source_flight_id, pilot_name, pilot_email, pilot_identity_id,
+	              result_status, evidence_code, distance_km, start_time_at, ess_time_at, goal_time_at, time_seconds,
+	              reached_ess, reached_goal, distance_points, time_points, departure_points,
+	              leading_points, arrival_position_points, arrival_time_points,
+	              raw_points, jump_the_gun_penalty_points, manual_penalty_points, manual_bonus_points, adjustment_reason,
+	              total_points,
+	              rank_no, evaluation_json, scored_at, published_at)
+	             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+	        );
         foreach ($rows as $row) {
             $identityId = isset($row['pilot_identity_id']) ? (int)$row['pilot_identity_id'] : 0;
             $insert->execute([
@@ -4512,10 +5753,15 @@ function scoring_publish_task_results(PDO $pdo, int $taskId): array {
                 $row['distance_points'],
                 $row['time_points'],
                 $row['departure_points'],
-                $row['leading_points'],
-                $row['arrival_position_points'],
-                $row['arrival_time_points'],
-                $row['total_points'],
+	                $row['leading_points'],
+	                $row['arrival_position_points'],
+	                $row['arrival_time_points'],
+	                $row['raw_points'],
+	                $row['jump_the_gun_penalty_points'],
+	                $row['manual_penalty_points'],
+	                $row['manual_bonus_points'],
+	                $row['adjustment_reason'],
+	                $row['total_points'],
                 $row['rank_no'],
                 $row['evaluation_json'],
                 $row['scored_at'],
@@ -4962,8 +6208,81 @@ function scoring_match_task_tracklogs(PDO $pdo, array $task, array $turnpoints):
     return count($tracklogs);
 }
 
+function scoring_gap2025_line_tolerance_m(array $turnpoint): float {
+    $type = scoring_gap2025_zone_type($turnpoint);
+    if ($type === 'goal_line') {
+        $radius = max(0.0, (float)($turnpoint['radius_m'] ?? 0.0));
+        return max(5.0, $radius * 0.001);
+    }
+    $offsetM = abs((float)($turnpoint['line_offset_km'] ?? 0.0) * 1000.0);
+    $halfLengthM = max(100.0, min(50000.0, (float)($turnpoint['line_half_length_km'] ?? 1.0) * 1000.0));
+    return max(5.0, max($offsetM, $halfLengthM) * 0.001);
+}
+
+function scoring_gap2025_line_distance_and_side(array $fix, array $line, array $ctx): array {
+    $point = scoring_gap2025_geodesic_to_cartesian((float)$fix['lat'], (float)$fix['lon'], $ctx);
+    $p1 = scoring_gap2025_geodesic_to_cartesian((float)$line['p1']['lat'], (float)$line['p1']['lon'], $ctx);
+    $p2 = scoring_gap2025_geodesic_to_cartesian((float)$line['p2']['lat'], (float)$line['p2']['lon'], $ctx);
+    $closest = scoring_gap2025_closest_point_on_segment($point, $p1, $p2);
+    $side = (((float)$p2['x'] - (float)$p1['x']) * ((float)$point['y'] - (float)$p1['y']))
+        - (((float)$p2['y'] - (float)$p1['y']) * ((float)$point['x'] - (float)$p1['x']));
+    return [
+        'distance_m' => scoring_gap2025_cart_distance($point, $closest),
+        'side' => $side <=> 0.0,
+        'point' => $point,
+        'p1' => $p1,
+        'p2' => $p2,
+    ];
+}
+
+function scoring_gap2025_line_hit(array $fixes, array $turnpoint, array $line, int $cursorTs): ?array {
+    $toleranceM = scoring_gap2025_line_tolerance_m($turnpoint);
+    $ctx = scoring_gap2025_ltm_context($line['centre']);
+    $isGoalLine = scoring_gap2025_zone_type($turnpoint) === 'goal_line';
+    $goalPreviousSide = 0;
+    $goalOuterRadiusM = scoring_gap2025_cylinder_outer_radius_m($turnpoint);
+    $goalCentre = null;
+    if ($isGoalLine && isset($line['previous'])) {
+        $previousInfo = scoring_gap2025_line_distance_and_side(['lat' => (float)$line['previous']['lat'], 'lon' => (float)$line['previous']['lon']], $line, $ctx);
+        $goalPreviousSide = (int)$previousInfo['side'];
+        $goalCentre = scoring_gap2025_geodesic_to_cartesian((float)$line['centre']['lat'], (float)$line['centre']['lon'], $ctx);
+    }
+    $previous = null;
+    $previousInfo = null;
+    foreach ($fixes as $fix) {
+        if ($fix['ts'] < $cursorTs) {
+            continue;
+        }
+        $info = scoring_gap2025_line_distance_and_side($fix, $line, $ctx);
+        if ($isGoalLine && $goalCentre !== null && $goalPreviousSide !== 0) {
+            $distanceToCentre = scoring_gap2025_cart_distance($info['point'], $goalCentre);
+            if ($distanceToCentre <= $goalOuterRadiusM && (int)$info['side'] !== $goalPreviousSide) {
+                return $fix;
+            }
+        }
+        if ((float)$info['distance_m'] <= $toleranceM) {
+            return $fix;
+        }
+        if ($previous !== null && $previousInfo !== null && (int)$previousInfo['side'] !== 0 && (int)$info['side'] !== 0 && (int)$previousInfo['side'] !== (int)$info['side']) {
+            $seconds = max(1, (int)$fix['ts'] - (int)$previous['ts']);
+            $aroundP1 = scoring_gap2025_cart_distance($previousInfo['point'], $info['p1']) + scoring_gap2025_cart_distance($info['point'], $info['p1']);
+            $aroundP2 = scoring_gap2025_cart_distance($previousInfo['point'], $info['p2']) + scoring_gap2025_cart_distance($info['point'], $info['p2']);
+            $requiredSpeed = min($aroundP1, $aroundP2) / $seconds;
+            if ($requiredSpeed > (120.0 / 3.6)) {
+                return $fix;
+            }
+        }
+        $previous = $fix;
+        $previousInfo = $info;
+    }
+    return null;
+}
+
 function scoring_interpolated_cylinder_hit(array $fixes, array $turnpoint, int $cursorTs): ?array {
-    $radiusM = scoring_gap2025_cylinder_outer_radius_m($turnpoint);
+    $innerRadiusM = scoring_gap2025_cylinder_inner_radius_m($turnpoint);
+    $outerRadiusM = scoring_gap2025_cylinder_outer_radius_m($turnpoint);
+    $previous = null;
+    $previousDistanceM = null;
     foreach ($fixes as $fix) {
         if ($fix['ts'] < $cursorTs) {
             continue;
@@ -4974,11 +6293,78 @@ function scoring_interpolated_cylinder_hit(array $fixes, array $turnpoint, int $
             (float)$turnpoint['latitude'],
             (float)$turnpoint['longitude']
         ) * 1000.0;
-        if ($distanceM <= $radiusM) {
+        if ($distanceM <= $outerRadiusM) {
             return $fix;
         }
+        if ($previous !== null && $previousDistanceM !== null) {
+            $innerCrossing = ($previousDistanceM < $innerRadiusM && $distanceM >= $innerRadiusM)
+                || ($previousDistanceM >= $innerRadiusM && $distanceM < $innerRadiusM);
+            $outerCrossing = ($previousDistanceM <= $outerRadiusM && $distanceM > $outerRadiusM)
+                || ($previousDistanceM > $outerRadiusM && $distanceM <= $outerRadiusM);
+            if ($innerCrossing || $outerCrossing) {
+                return $fix;
+            }
+        }
+        $previous = $fix;
+        $previousDistanceM = $distanceM;
     }
     return null;
+}
+
+function scoring_gap2025_turnpoint_line_definition(array $turnpoints, int $idx, array $routeMetrics): array {
+    $turnpoint = $turnpoints[$idx];
+    if (scoring_gap2025_zone_type($turnpoint) === 'goal_line') {
+        $path = $routeMetrics['geodesic_path'] ?? [];
+        $previous = $path[$idx - 1] ?? null;
+        if ($previous === null && isset($turnpoints[$idx - 1])) {
+            $previous = ['lat' => (float)$turnpoints[$idx - 1]['latitude'], 'lon' => (float)$turnpoints[$idx - 1]['longitude']];
+        }
+        return scoring_gap2025_goal_line_definition($turnpoint, $previous);
+    }
+    return scoring_gap2025_line_definition($turnpoint);
+}
+
+function scoring_gap2025_distance_to_control_zone_km(float $lat, float $lon, array $turnpoints, int $idx, array $routeMetrics): float {
+    if (!isset($turnpoints[$idx])) {
+        return 0.0;
+    }
+    $turnpoint = $turnpoints[$idx];
+    $zoneType = $idx === 0 ? 'cylinder' : scoring_gap2025_zone_type($turnpoint);
+    if ($zoneType === 'line' || $zoneType === 'goal_line') {
+        $line = scoring_gap2025_turnpoint_line_definition($turnpoints, $idx, $routeMetrics);
+        $ctx = scoring_gap2025_ltm_context($line['centre']);
+        $info = scoring_gap2025_line_distance_and_side(['lat' => $lat, 'lon' => $lon], $line, $ctx);
+        return max(0.0, ((float)$info['distance_m'] - scoring_gap2025_line_tolerance_m($turnpoint)) / 1000.0);
+    }
+    $remaining = scoring_haversine_km(
+        $lat,
+        $lon,
+        (float)$turnpoint['latitude'],
+        (float)$turnpoint['longitude']
+    );
+    return max(0.0, $remaining - (scoring_gap2025_cylinder_outer_radius_m($turnpoint) / 1000.0));
+}
+
+function scoring_reach_turnpoints(array $fixes, array $turnpoints, int $cursorTs): array {
+    $reached = [];
+    $lastReachedIndex = -1;
+    $routeMetrics = count($turnpoints) >= 2 ? scoring_optimised_route_metrics($turnpoints) : [];
+    foreach ($turnpoints as $idx => $tp) {
+        $zoneType = $idx === 0 ? 'cylinder' : scoring_gap2025_zone_type($tp);
+        if ($zoneType === 'line' || $zoneType === 'goal_line') {
+            $line = scoring_gap2025_turnpoint_line_definition($turnpoints, $idx, $routeMetrics);
+            $hit = scoring_gap2025_line_hit($fixes, $tp, $line, $cursorTs);
+        } else {
+            $hit = scoring_interpolated_cylinder_hit($fixes, $tp, $cursorTs);
+        }
+        if ($hit === null) {
+            break;
+        }
+        $reached[$idx] = $hit;
+        $lastReachedIndex = $idx;
+        $cursorTs = (int)$hit['ts'];
+    }
+    return [$reached, $lastReachedIndex];
 }
 
 function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, array $fixes): array {
@@ -4992,7 +6378,8 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
     $taskDistance = scoring_task_distance_km($turnpoints);
     $taskDistance = max($taskDistance, (float)$task['minimum_distance_km']);
     $route = array_values($turnpoints);
-    $cumulative = scoring_route_cumulative($route);
+    $routeMetrics = scoring_optimised_route_metrics($route);
+    $cumulative = $routeMetrics['cumulative'] ?? scoring_route_cumulative($route);
     list($sssIndex, $essIndex) = scoring_speed_section_indices($turnpoints);
     $sssProgress = $cumulative[$sssIndex] ?? 0.0;
     $essProgress = $cumulative[$essIndex] ?? $taskDistance;
@@ -5007,9 +6394,10 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
     sort($gateTimes);
     $firstGateTs = $gateTimes[0] ?? null;
     $firstTaskStartTs = $firstGateTs ?? $windowOpen;
-    $initialCursorTs = (($task['task_type'] ?? 'race') === 'race' && $firstGateTs !== null)
-        ? $firstGateTs
-        : $windowOpen;
+    $profile = scoring_gap2025_class_profile($task);
+    $jumpEnabled = scoring_gap2025_jump_the_gun_enabled($task);
+    $jumpMaxSeconds = scoring_gap2025_jump_the_gun_max_seconds($task);
+    $jumpSecondsPerPoint = scoring_gap2025_jump_the_gun_seconds_per_point($task);
 
     $filtered = [];
     foreach ($fixes as $fix) {
@@ -5043,17 +6431,17 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
         ];
     }
 
-    $reached = [];
-    $lastReachedIndex = -1;
-    $cursorTs = $initialCursorTs;
-    foreach ($turnpoints as $idx => $tp) {
-        $hit = scoring_interpolated_cylinder_hit($filtered, $tp, $cursorTs);
-        if ($hit === null) {
-            break;
+    [$reached, $lastReachedIndex] = scoring_reach_turnpoints($filtered, $turnpoints, $windowOpen);
+    if (($task['task_type'] ?? 'race') === 'race'
+        && $firstGateTs !== null
+        && isset($reached[$sssIndex])
+        && (int)$reached[$sssIndex]['ts'] < $firstGateTs
+    ) {
+        [$legalReached, $legalLastReachedIndex] = scoring_reach_turnpoints($filtered, $turnpoints, $firstGateTs);
+        if (isset($legalReached[$sssIndex])) {
+            $reached = $legalReached;
+            $lastReachedIndex = $legalLastReachedIndex;
         }
-        $reached[$idx] = $hit;
-        $lastReachedIndex = $idx;
-        $cursorTs = $hit['ts'];
     }
 
     $reachedGoal = $lastReachedIndex === count($turnpoints) - 1;
@@ -5074,13 +6462,13 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
                 if ($fix['ts'] < $searchAfterTs) {
                     continue;
                 }
-                $remaining = scoring_haversine_km(
+                $remaining = scoring_gap2025_distance_to_control_zone_km(
                     (float)$fix['lat'],
                     (float)$fix['lon'],
-                    (float)$nextTurnpoint['latitude'],
-                    (float)$nextTurnpoint['longitude']
+                    $turnpoints,
+                    $nextTurnpointIndex,
+                    $routeMetrics
                 );
-                $remaining = max(0.0, $remaining - (((float)$nextTurnpoint['radius_m']) / 1000.0));
                 if ($remaining < $closestDistanceToNext) {
                     $closestDistanceToNext = $remaining;
                 }
@@ -5099,6 +6487,8 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
     $startTs = null;
     $sssCrossTs = null;
     $earlyStartSeconds = null;
+    $jumpPenaltyPoints = 0.0;
+    $jumpStatus = 'none';
     if (isset($reached[$sssIndex])) {
         $crossTs = (int)$reached[$sssIndex]['ts'];
         $sssCrossTs = $crossTs;
@@ -5111,6 +6501,19 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
             }
             if ($startTs === null && $firstGateTs !== null) {
                 $earlyStartSeconds = max(0, $firstGateTs - $crossTs);
+                if ($profile['discipline'] === 'paragliding') {
+                    $jumpStatus = 'paragliding_distance_to_sss';
+                    $startTs = $firstGateTs;
+                } elseif (!$jumpEnabled) {
+                    $jumpStatus = 'jump_the_gun_disabled';
+                    $startTs = $firstGateTs;
+                } elseif ($jumpEnabled && $earlyStartSeconds <= $jumpMaxSeconds) {
+                    $jumpStatus = 'jump_the_gun_penalty';
+                    $jumpPenaltyPoints = $jumpSecondsPerPoint > 0.0 ? $earlyStartSeconds / $jumpSecondsPerPoint : 0.0;
+                    $startTs = $firstGateTs;
+                } else {
+                    $jumpStatus = 'minimum_distance';
+                }
             }
         } else {
             $startTs = $crossTs;
@@ -5153,7 +6556,34 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
     $lastFiltered = $filtered[count($filtered) - 1];
     $notes = [];
     if ($earlyStartSeconds !== null) {
-        $notes[] = 'Vroege start gedetecteerd; automatische Jump-the-Gun-penalty is nog niet toegepast.';
+        if ($jumpStatus === 'jump_the_gun_penalty') {
+            $notes[] = 'Jump-the-Gun: ' . $earlyStartSeconds . ' seconden te vroeg, penalty ' . round($jumpPenaltyPoints, 1) . ' punten.';
+        } elseif ($jumpStatus === 'minimum_distance') {
+            $notes[] = 'Jump-the-Gun: te vroeg gestart buiten toegestane marge; minimumafstand toegepast.';
+        } elseif ($jumpStatus === 'paragliding_distance_to_sss') {
+            $notes[] = 'Vroege start in paragliding: alleen afstand tot SSS telt.';
+        } elseif ($jumpStatus === 'jump_the_gun_disabled') {
+            $notes[] = 'Vroege start gedetecteerd, maar Jump-the-Gun is uitgeschakeld.';
+        }
+    }
+    if ($jumpStatus === 'minimum_distance') {
+        $distance = max(0.0, (float)$task['minimum_distance_km']);
+        $reachedEss = false;
+        $reachedGoal = false;
+        $essTs = null;
+        $goalTs = null;
+        $timeSeconds = null;
+        $leadingTrace = [];
+        $bestMinToEss = null;
+    } elseif ($jumpStatus === 'paragliding_distance_to_sss') {
+        $distance = max((float)$task['minimum_distance_km'], min($taskDistance, $sssProgress));
+        $reachedEss = false;
+        $reachedGoal = false;
+        $essTs = null;
+        $goalTs = null;
+        $timeSeconds = null;
+        $leadingTrace = [];
+        $bestMinToEss = null;
     }
 
     return [
@@ -5173,6 +6603,10 @@ function scoring_evaluate_flight(array $task, array $turnpoints, array $gates, a
         'first_task_start_at' => $tsToSql($firstTaskStartTs),
         'last_flying_time_at' => $tsToSql($lastFiltered['ts'] ?? null),
         'early_start_seconds' => $earlyStartSeconds,
+        'jump_the_gun_status' => $jumpStatus,
+        'jump_the_gun_penalty_points' => round($jumpPenaltyPoints, 1),
+        'jump_the_gun_max_seconds' => $jumpMaxSeconds,
+        'jump_the_gun_seconds_per_point' => $jumpSecondsPerPoint,
         'leading_trace' => $leadingTrace,
         'best_min_to_ess_km' => $bestMinToEss !== null ? round($bestMinToEss, 6) : null,
         'speed_section_distance_km' => round($speedDistance, 6),
@@ -5200,6 +6634,9 @@ function scoring_manual_minimum_evaluation(array $task): array {
         'best_min_to_ess_km' => null,
         'speed_section_distance_km' => null,
         'goal_is_ess' => false,
+        'early_start_seconds' => null,
+        'jump_the_gun_status' => 'none',
+        'jump_the_gun_penalty_points' => 0.0,
         'notes' => ['Handmatig minimumafstand zonder tracklog.'],
     ];
 }
@@ -5223,6 +6660,9 @@ function scoring_manual_dnf_evaluation(): array {
         'best_min_to_ess_km' => null,
         'speed_section_distance_km' => null,
         'goal_is_ess' => false,
+        'early_start_seconds' => null,
+        'jump_the_gun_status' => 'none',
+        'jump_the_gun_penalty_points' => 0.0,
         'notes' => ['DNF: piloot is gestart/aangemeld, maar er is geen te scoren vlucht.'],
     ];
 }
@@ -5246,6 +6686,9 @@ function scoring_manual_abs_evaluation(): array {
         'best_min_to_ess_km' => null,
         'speed_section_distance_km' => null,
         'goal_is_ess' => false,
+        'early_start_seconds' => null,
+        'jump_the_gun_status' => 'none',
+        'jump_the_gun_penalty_points' => 0.0,
         'notes' => ['ABS: piloot afwezig voor deze taak.'],
     ];
 }
@@ -5259,6 +6702,27 @@ function scoring_enabled_components(array $task): array {
         'leading' => true,
         'arrival_position' => (bool)$profile['arrival_points'],
         'arrival_time' => false,
+    ];
+}
+
+function scoring_gap2025_support_status(array $task): array {
+    $limits = [
+        'Stopped tasks and altitude bonus are not supported yet.',
+        'Physical goal-line observations and safety overrides must be entered as manual corrections.',
+        'Restart segment selection for multiple gates/time trials still uses the current best detected route segment.',
+    ];
+    $status = 'core_supported';
+    if (($task['task_type'] ?? 'race') === 'race'
+        && scoring_gap2025_class_profile($task)['discipline'] === 'hang_gliding'
+        && !scoring_gap2025_jump_the_gun_enabled($task)
+    ) {
+        $status = 'configuration_warning';
+        array_unshift($limits, 'Jump-the-Gun is disabled for a hang-gliding race task.');
+    }
+    return [
+        'status' => $status,
+        'label' => $status === 'core_supported' ? 'GAP 2025 core supported' : 'GAP 2025 configuration warning',
+        'limits' => $limits,
     ];
 }
 
@@ -5611,7 +7075,11 @@ function scoring_allocate_gap2025_points(array $task, array $evaluations, float 
         $leadingPoints = round($leadingPoints, 1);
         $arrivalPositionPoints = round($arrivalPositionPoints, 1);
         $arrivalTimePoints = round($arrivalTimePoints, 1);
-        $total = round($distancePoints + $timePoints + $leadingPoints + $arrivalPositionPoints + $arrivalTimePoints + $departurePoints, 1);
+        $rawTotal = round($distancePoints + $timePoints + $leadingPoints + $arrivalPositionPoints + $arrivalTimePoints + $departurePoints, 1);
+        $jumpPenalty = round(max(0.0, (float)($ev['jump_the_gun_penalty_points'] ?? 0.0)), 1);
+        $manualPenalty = round(max(0.0, (float)($entry['flight']['manual_penalty_points'] ?? 0.0)), 1);
+        $manualBonus = round(max(0.0, (float)($entry['flight']['manual_bonus_points'] ?? 0.0)), 1);
+        $total = round(max(0.0, $rawTotal - $jumpPenalty - $manualPenalty + $manualBonus), 1);
         $scored[$flightId] = [
             'distance_points' => $distancePoints,
             'time_points' => $timePoints,
@@ -5619,6 +7087,10 @@ function scoring_allocate_gap2025_points(array $task, array $evaluations, float 
             'leading_points' => $leadingPoints,
             'arrival_position_points' => $arrivalPositionPoints,
             'arrival_time_points' => $arrivalTimePoints,
+            'raw_points' => $rawTotal,
+            'jump_the_gun_penalty_points' => $jumpPenalty,
+            'manual_penalty_points' => $manualPenalty,
+            'manual_bonus_points' => $manualBonus,
             'total_points' => $total,
         ];
     }
@@ -5628,7 +7100,8 @@ function scoring_allocate_gap2025_points(array $task, array $evaluations, float 
         'evaluations' => $updatedEvaluations,
         'summary' => [
             'formula_version' => 'GAP2025',
-            'implementation_note' => 'CIVL GAP 2025 core task validity, allocation, speed, leading and arrival formulas. Cylinder-only tasks; stopped tasks, lines, and automatic early-start penalties require separate task support.',
+            'implementation_note' => 'CIVL GAP 2025 core task validity, allocation, speed, leading, arrival, Jump-the-Gun, and adjustment handling for cylinder tasks.',
+            'gap2025_support' => scoring_gap2025_support_status($task),
             'pilots_present' => $pilotsPresent,
             'pilots_flying' => $count,
             'pilots_scored' => $count,
@@ -5650,6 +7123,11 @@ function scoring_allocate_gap2025_points(array $task, array $evaluations, float 
             'nominal_distance_area' => round($distanceValidityData['nominal_distance_area'], 4),
             'goal_ratio' => round($goalRatio, 4),
             'leading_time_ratio' => round($leadingTimeRatio, 4),
+            'jump_the_gun' => [
+                'enabled' => scoring_gap2025_jump_the_gun_enabled($task),
+                'seconds_per_point' => scoring_gap2025_jump_the_gun_seconds_per_point($task),
+                'max_seconds' => scoring_gap2025_jump_the_gun_max_seconds($task),
+            ],
             'first_task_start_at' => gmdate('Y-m-d H:i:s', $firstTaskStartTs),
             'max_lc_time_seconds' => $maxLcTimeSeconds,
             'point_weights' => [
@@ -5745,6 +7223,7 @@ function scoring_score_task(PDO $pdo, int $taskId): array {
             'summary' => [
                 'formula_version' => 'GAP2025',
                 'implementation_note' => 'Geen vliegende piloten; task validity is 0.',
+                'gap2025_support' => scoring_gap2025_support_status($task),
                 'pilots_present' => $pilotsPresent,
                 'pilots_flying' => 0,
                 'pilots_scored' => 0,
@@ -5805,13 +7284,14 @@ function scoring_score_task(PDO $pdo, int $taskId): array {
     }
 
     $update = $pdo->prepare(
-        'UPDATE rankings_scoring_task_flights
-         SET distance_km = ?, start_time_at = ?, ess_time_at = ?, goal_time_at = ?, time_seconds = ?,
-             reached_ess = ?, reached_goal = ?, distance_points = ?, time_points = ?, departure_points = ?,
-             leading_points = ?, arrival_position_points = ?, arrival_time_points = ?, total_points = ?,
-             rank_no = ?, evidence_code = ?, evaluation_json = ?, scored_at = NOW()
-         WHERE id = ?'
-    );
+	        'UPDATE rankings_scoring_task_flights
+	         SET distance_km = ?, start_time_at = ?, ess_time_at = ?, goal_time_at = ?, time_seconds = ?,
+	             reached_ess = ?, reached_goal = ?, distance_points = ?, time_points = ?, departure_points = ?,
+	             leading_points = ?, arrival_position_points = ?, arrival_time_points = ?, raw_points = ?,
+	             jump_the_gun_penalty_points = ?, total_points = ?,
+	             rank_no = ?, evidence_code = ?, evaluation_json = ?, scored_at = NOW()
+	         WHERE id = ?'
+	    );
     foreach ($included as $entry) {
         $flightId = (int)$entry['flight']['id'];
         $ev = $evaluationsByFlight[$flightId];
@@ -5827,25 +7307,28 @@ function scoring_score_task(PDO $pdo, int $taskId): array {
             $points['distance_points'],
             $points['time_points'],
             $points['departure_points'],
-            $points['leading_points'],
-            $points['arrival_position_points'],
-            $points['arrival_time_points'],
-            $points['total_points'],
-            $ranks[$flightId] ?? null,
-            scoring_result_evidence_code($entry['flight']),
+	            $points['leading_points'],
+	            $points['arrival_position_points'],
+	            $points['arrival_time_points'],
+	            $points['raw_points'],
+	            $points['jump_the_gun_penalty_points'],
+	            $points['total_points'],
+	            $ranks[$flightId] ?? null,
+	            scoring_result_evidence_code($entry['flight']),
             json_encode($ev, JSON_UNESCAPED_UNICODE),
             $flightId,
         ]);
     }
 
     $dnfUpdate = $pdo->prepare(
-        'UPDATE rankings_scoring_task_flights
-         SET distance_km = 0, start_time_at = NULL, ess_time_at = NULL, goal_time_at = NULL, time_seconds = NULL,
-             reached_ess = 0, reached_goal = 0, distance_points = 0, time_points = 0, departure_points = 0,
-             leading_points = 0, arrival_position_points = 0, arrival_time_points = 0, total_points = 0,
-             rank_no = NULL, evidence_code = ?, evaluation_json = ?, scored_at = NOW()
-         WHERE id = ?'
-    );
+	        'UPDATE rankings_scoring_task_flights
+	         SET distance_km = 0, start_time_at = NULL, ess_time_at = NULL, goal_time_at = NULL, time_seconds = NULL,
+	             reached_ess = 0, reached_goal = 0, distance_points = 0, time_points = 0, departure_points = 0,
+	             leading_points = 0, arrival_position_points = 0, arrival_time_points = 0,
+	             raw_points = 0, jump_the_gun_penalty_points = 0, total_points = 0,
+	             rank_no = NULL, evidence_code = ?, evaluation_json = ?, scored_at = NOW()
+	         WHERE id = ?'
+	    );
     foreach ($dnfFlights as $flight) {
         $dnfUpdate->execute(['N', json_encode(scoring_manual_dnf_evaluation(), JSON_UNESCAPED_UNICODE), (int)$flight['id']]);
     }

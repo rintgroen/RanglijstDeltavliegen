@@ -19,7 +19,7 @@ application.
 - CSV competition result upload, export, and deletion.
 - Visitor memories for competitions, with admin moderation.
 - Separate competition scoring section for scorer-managed tasks, IGC uploads,
-  Flymaster replay candidate scouting, review/exclusion, scoring, and published
+  live-tracking candidate scouting, review/exclusion, scoring, and published
   results. These scored competitions are stored in separate `rankings_scoring_*`
   tables and do not affect the Dutch ranking unless their results are manually
   uploaded through the existing CSV workflow.
@@ -172,13 +172,20 @@ and task area.
 
 Pilots can also manage a persistent track profile at
 `public/track_profile.php`. The profile uses a magic link sent to their e-mail
-address and stores their score display name, e-mail address, Flymaster serial
-number, and consent for Flymaster replay collection.
+address and stores their score display name, e-mail address, tracker type,
+tracker ID, and consent for automatic track collection.
 
 On a task review page, scorers can use `Flymaster zoeken` to scout public
 Flymaster playback for opted-in device serials around the task time window and
-task area. Matching traces are reconstructed as candidate IGC-like tracklogs
-beside manual uploads. These reconstructions are a convenience source, not a
+task area. They can also use `Skytraxx zoeken` for opted-in Skytraxx devices
+that publish via Burnair. The Skytraxx path first tries an officially configured
+Burnair IGC download URL (`SCORING_BURNAIR_IGC_URL_TEMPLATE`). If that is not
+available, live-track reconstruction remains off unless
+`SCORING_BURNAIR_PUBLIC_LIVETRACKING` is enabled for an installation that has
+written Burnair permission to use those endpoints.
+
+Matching live traces are reconstructed as candidate IGC-like tracklogs beside
+manual uploads. These reconstructions are a convenience source, not a
 replacement for an original instrument IGC when the pilot or scorer wants the
 authoritative file. Flymaster group `1` is used by default; set
 `SCORING_FLYMASTER_GROUP_ID` in `config.php` if a different public group should
@@ -192,7 +199,7 @@ Within each pilot group, the scorer chooses exclude, ABS, DNF, minimum distance,
 or one selected track. Other track candidates are kept as alternatives and
 excluded from scoring. The task/track map is loaded only for the active pilot
 when `Use track` is selected.
-Scoring uses the reviewed rows only; finding uploads and Flymaster candidates is
+Scoring uses the reviewed rows only; finding uploads and live-tracking candidates is
 an explicit review step.
 
 The scoring engine is isolated in `includes/scoring.php` and is labelled
@@ -245,7 +252,7 @@ the complete formula.
 - Ensure `public/uploads/memories/` is writable if visitors can upload memory
   photos.
 - Ensure `public/uploads/scoring/` can be created/written by the web server if
-  scorer waypoints, pilot IGC uploads, or Flymaster replay reconstructions are
+  scorer waypoints, pilot IGC uploads, or live-tracking reconstructions are
   enabled.
 - Use `ADMIN_PASSWORD_HASH` for new installs instead of the legacy
   `ADMIN_PASSWORD` fallback.

@@ -211,7 +211,7 @@ app_page_start(($competition['name'] ?? $task['competition_name']) . ' - ' . $ta
 	      <a class="btn" href="<?= h($landingReportHref) ?>">Landing melden</a>
 	      <a class="btn secondary" href="<?= h($trackUploadHref) ?>">Tracklog uploaden</a>
 	    </p>
-	    <p class="muted task-share-pilot-note">Flymaster Live kan als voorlopige score-evidence worden gebruikt. Een originele, valide IGC kan gunstiger zijn voor timing en blijft de beste evidence voor strengere wedstrijden.</p>
+	    <p class="muted task-share-pilot-note">Live-tracking kan als voorlopige score-evidence worden gebruikt. Een originele, valide IGC kan gunstiger zijn voor timing en blijft de beste evidence voor strengere wedstrijden.</p>
 	  </section>
 	</main>
 <?php app_page_end(app_site_name()); ?>

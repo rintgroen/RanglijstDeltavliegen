@@ -253,7 +253,7 @@ app_page_start('Tracklogs - Scoring', [
             </div>
             <?php $selectedSource = strtolower(trim((string)($selectedTracklog['source'] ?? 'manual_upload'))); ?>
             <div class="inline">
-              <?php if (!in_array($selectedSource, ['flymaster_replay', 'livetrack24'], true)): ?>
+              <?php if (!scoring_tracklog_source_is_live_reconstruction($selectedSource)): ?>
                 <form method="post">
                   <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
                   <input type="hidden" name="action" value="validate_tracklog">

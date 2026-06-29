@@ -259,6 +259,7 @@ function public_scoring_build_task_results_pdf(array $task, ?array $competition,
             ['Tijd', 7, 'right'],
             ['Lead', 7, 'right'],
             ['Arr', 7, 'right'],
+            ['Corr', 7, 'right'],
             ['Totaal', 7, 'right'],
         ]);
         $writeMono($tableHeader);
@@ -276,6 +277,9 @@ function public_scoring_build_task_results_pdf(array $task, ?array $competition,
                 $distance .= ' goal';
             }
             $arrival = ((float)$row['arrival_position_points']) + ((float)$row['arrival_time_points']);
+            $correction = ((float)($row['manual_bonus_points'] ?? 0.0))
+                - ((float)($row['jump_the_gun_penalty_points'] ?? 0.0))
+                - ((float)($row['manual_penalty_points'] ?? 0.0));
             $evidenceCode = scoring_result_evidence_code($row);
             $writeMono(public_scoring_table_line([
                 [(string)($row['rank_no'] ?? '-'), 4, 'right'],
@@ -286,6 +290,7 @@ function public_scoring_build_task_results_pdf(array $task, ?array $competition,
                 [app_format_compact_number($row['time_points'], 1), 7, 'right'],
                 [app_format_compact_number($row['leading_points'], 1), 7, 'right'],
                 [app_format_compact_number($arrival, 1), 7, 'right'],
+                [app_format_compact_number($correction, 1), 7, 'right'],
                 [app_format_compact_number($row['total_points'], 1), 7, 'right'],
             ]));
         }
@@ -653,6 +658,7 @@ app_page_start(app_site_name() . ' - ' . $task['competition_name'] . ' ' . $task
               <th>Tijd</th>
               <th>Leading</th>
               <th>Arrival</th>
+              <th>Correctie</th>
               <th>Totaal</th>
             </tr>
           </thead>
@@ -661,6 +667,9 @@ app_page_start(app_site_name() . ' - ' . $task['competition_name'] . ' ' . $task
               <?php
                 $resultStatus = scoring_task_flight_result_status($row);
                 $evidenceCode = scoring_result_evidence_code($row);
+                $correction = ((float)($row['manual_bonus_points'] ?? 0.0))
+                    - ((float)($row['jump_the_gun_penalty_points'] ?? 0.0))
+                    - ((float)($row['manual_penalty_points'] ?? 0.0));
               ?>
               <tr>
                 <td><?= $resultStatus === 'dnf' ? 'DNF' : (int)$row['rank_no'] ?></td>
@@ -677,6 +686,7 @@ app_page_start(app_site_name() . ' - ' . $task['competition_name'] . ' ' . $task
                 <td><?= h(app_format_compact_number($row['time_points'], 1)) ?></td>
                 <td><?= h(app_format_compact_number($row['leading_points'], 1)) ?></td>
                 <td><?= h(app_format_compact_number(((float)$row['arrival_position_points']) + ((float)$row['arrival_time_points']), 1)) ?></td>
+                <td><?= h(app_format_compact_number($correction, 1)) ?></td>
                 <td><strong><?= h(app_format_compact_number($row['total_points'], 1)) ?></strong></td>
               </tr>
             <?php endforeach; ?>
@@ -686,6 +696,9 @@ app_page_start(app_site_name() . ' - ' . $task['competition_name'] . ' ' . $task
       <p class="muted evidence-legend"><?= h(scoring_evidence_legend_text()) ?></p>
       <?php if (!empty($summary['implementation_note'])): ?>
         <p class="muted"><?= h($summary['implementation_note']) ?></p>
+      <?php endif; ?>
+      <?php if (!empty($summary['gap2025_support']) && is_array($summary['gap2025_support'])): ?>
+        <p class="muted"><?= h($summary['gap2025_support']['label'] ?? 'GAP 2025 support') ?></p>
       <?php endif; ?>
     <?php endif; ?>
   </section>

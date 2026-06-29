@@ -30,6 +30,29 @@ assert_close(scoring_gap2025_leading_factor(1.0, 1.0), 1.0, 0.000001, 'leading f
 assert_close(scoring_gap2025_leading_factor(2.0, 1.0), 0.0, 0.000001, 'leading factor zero at doubled LCmin');
 assert_close(scoring_gap2025_leading_factor(1.125, 1.0), 0.75, 0.000001, 'leading factor cubic-root curve');
 
+$ltm = scoring_gap2025_ltm_context(['lat' => 52.0, 'lon' => 5.0]);
+$cart = scoring_gap2025_geodesic_to_cartesian(52.123456, 5.234567, $ltm);
+$geo = scoring_gap2025_cartesian_to_geodesic($cart['x'], $cart['y'], $ltm);
+assert_close($geo['lat'], 52.123456, 0.00001, 'LTM latitude roundtrip');
+assert_close($geo['lon'], 5.234567, 0.00001, 'LTM longitude roundtrip');
+
+$route = [
+    ['latitude' => 52.0, 'longitude' => 5.0, 'radius_m' => 0],
+    ['latitude' => 52.1, 'longitude' => 5.0, 'radius_m' => 400],
+];
+$routeMetrics = scoring_optimised_route_metrics($route);
+$centerDistance = scoring_center_route_distance_km($route);
+assert_close($centerDistance - $routeMetrics['distance'], 0.4, 0.02, 'cylinder route optimizer reaches boundary');
+
+$lineRoute = [
+    ['latitude' => 52.0, 'longitude' => 5.0, 'radius_m' => 0],
+    ['latitude' => 52.1, 'longitude' => 5.0, 'radius_m' => 400, 'control_zone_type' => 'line', 'line_orientation_deg' => 0, 'line_offset_km' => 0, 'line_half_length_km' => 1.0],
+    ['latitude' => 52.2, 'longitude' => 5.0, 'radius_m' => 400],
+];
+$lineMetrics = scoring_optimised_route_metrics($lineRoute);
+assert_close($lineMetrics['path'][1][0], 52.1, 0.0001, 'line optimizer chooses crossing latitude');
+assert_close($lineMetrics['path'][1][1], 5.0, 0.0001, 'line optimizer chooses crossing longitude');
+
 $firstStart = strtotime('2026-01-01 12:00:00 UTC');
 $lc = scoring_gap2025_leading_coefficient_from_evaluation([
     'leading_trace' => [
@@ -46,16 +69,20 @@ $allocation = scoring_allocate_gap2025_points([
     'nominal_distance_km' => 50.0,
     'nominal_time_minutes' => 90,
     'leading_time_ratio' => 0.175,
+    'jump_the_gun_enabled' => 1,
+    'jump_the_gun_seconds_per_point' => 2.0,
+    'jump_the_gun_max_seconds' => 300,
     'window_open_at' => '2026-01-01 11:00:00',
     'window_close_at' => '2026-01-01 17:00:00',
     'task_deadline_at' => '2026-01-01 17:00:00',
 ], [[
-    'flight' => ['id' => 1, 'pilot_name' => 'Pilot A'],
+    'flight' => ['id' => 1, 'pilot_name' => 'Pilot A', 'manual_penalty_points' => 2.0, 'manual_bonus_points' => 1.0],
     'evaluation' => [
         'distance_km' => 50.0,
         'reached_ess' => true,
         'reached_goal' => true,
         'time_seconds' => 5400,
+        'jump_the_gun_penalty_points' => 10.0,
         'ess_time_at' => '2026-01-01 13:30:00',
         'goal_time_at' => '2026-01-01 13:30:00',
         'first_task_start_at' => '2026-01-01 12:00:00',
@@ -74,5 +101,60 @@ if (!($allocation['summary']['launch_validity'] < 1.0)) {
     fwrite(STDERR, 'launch validity should be devalued when one of two present pilots flies' . PHP_EOL);
     exit(1);
 }
+$points = $allocation['points'][1];
+assert_close($points['raw_points'] - $points['total_points'], 11.0, 0.000001, 'automatic and manual adjustments reduce final points');
+
+$task = [
+    'class' => 'Klasse 1',
+    'window_open_at' => '2026-01-01 11:00:00',
+    'window_close_at' => '2026-01-01 17:00:00',
+    'task_deadline_at' => '2026-01-01 17:00:00',
+    'task_type' => 'race',
+    'minimum_distance_km' => 1.0,
+    'nominal_distance_km' => 10.0,
+    'nominal_time_minutes' => 60,
+    'jump_the_gun_enabled' => 1,
+    'jump_the_gun_seconds_per_point' => 2.0,
+    'jump_the_gun_max_seconds' => 300,
+];
+$turnpoints = [
+    ['latitude' => 52.0, 'longitude' => 5.0, 'radius_m' => 400, 'is_speed_section_start' => 1, 'is_speed_section_end' => 0],
+    ['latitude' => 52.09, 'longitude' => 5.0, 'radius_m' => 400, 'is_speed_section_start' => 0, 'is_speed_section_end' => 1],
+];
+$gates = [['gate_time_at' => '2026-01-01 12:00:00']];
+$lineReach = scoring_reach_turnpoints([
+    ['time_utc' => '2026-01-01 11:30:00', 'ts' => strtotime('2026-01-01 11:30:00 UTC'), 'lat' => 52.0, 'lon' => 5.0],
+    ['time_utc' => '2026-01-01 12:05:00', 'ts' => strtotime('2026-01-01 12:05:00 UTC'), 'lat' => 52.095, 'lon' => 5.0],
+    ['time_utc' => '2026-01-01 12:06:00', 'ts' => strtotime('2026-01-01 12:06:00 UTC'), 'lat' => 52.105, 'lon' => 5.0],
+], [
+    ['latitude' => 52.0, 'longitude' => 5.0, 'radius_m' => 400],
+    ['latitude' => 52.1, 'longitude' => 5.0, 'radius_m' => 400, 'control_zone_type' => 'line', 'line_orientation_deg' => 0, 'line_offset_km' => 0, 'line_half_length_km' => 1.0],
+], strtotime('2026-01-01 11:00:00 UTC'));
+if ($lineReach[1] !== 1) {
+    fwrite(STDERR, 'expected line control zone to be reached' . PHP_EOL);
+    exit(1);
+}
+
+$early = scoring_evaluate_flight($task, $turnpoints, $gates, [
+    ['time_utc' => '2026-01-01 11:59:00', 'lat' => 52.0, 'lon' => 5.0],
+    ['time_utc' => '2026-01-01 13:00:00', 'lat' => 52.09, 'lon' => 5.0],
+]);
+assert_close($early['time_seconds'], 3600, 0.000001, 'early starter time is measured from first gate');
+assert_close($early['early_start_seconds'], 60, 0.000001, 'early start seconds');
+assert_close($early['jump_the_gun_penalty_points'], 30.0, 0.000001, 'jump-the-gun penalty points');
+if ($early['jump_the_gun_status'] !== 'jump_the_gun_penalty') {
+    fwrite(STDERR, 'expected jump_the_gun_penalty status, got ' . $early['jump_the_gun_status'] . PHP_EOL);
+    exit(1);
+}
+
+$tooEarly = scoring_evaluate_flight($task, $turnpoints, $gates, [
+    ['time_utc' => '2026-01-01 11:50:00', 'lat' => 52.0, 'lon' => 5.0],
+    ['time_utc' => '2026-01-01 13:00:00', 'lat' => 52.09, 'lon' => 5.0],
+]);
+if ($tooEarly['jump_the_gun_status'] !== 'minimum_distance') {
+    fwrite(STDERR, 'expected minimum_distance status, got ' . $tooEarly['jump_the_gun_status'] . PHP_EOL);
+    exit(1);
+}
+assert_close($tooEarly['distance_km'], 1.0, 0.000001, 'too-early starter receives minimum distance');
 
 echo "GAP 2025 math checks passed\n";

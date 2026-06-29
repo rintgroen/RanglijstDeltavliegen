@@ -72,10 +72,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $error === null) {
             if ($displayName === '') {
                 throw new RuntimeException('Vul je naam in.');
             }
-            $flymasterSerial = scoring_flymaster_normalize_serial((string)($_POST['flymaster_serial'] ?? ''));
-            $flymasterEnabled = isset($_POST['flymaster_enabled']) ? 1 : 0;
-            if ($flymasterEnabled === 1 && $flymasterSerial === '') {
-                throw new RuntimeException('Vul je Flymaster serienummer in voordat je toestemming geeft.');
+            $trackerProvider = strtolower(trim((string)($_POST['tracker_provider'] ?? 'none')));
+            if (!in_array($trackerProvider, ['none', 'flymaster'], true)) {
+                throw new RuntimeException('Kies een geldige tracker.');
+            }
+            $trackerDeviceId = trim((string)($_POST['tracker_device_id'] ?? ''));
+            $trackerEnabled = isset($_POST['tracker_enabled']) ? 1 : 0;
+            $flymasterSerial = null;
+            $flymasterEnabled = 0;
+            if ($trackerProvider === 'flymaster') {
+                $flymasterSerial = scoring_flymaster_normalize_serial($trackerDeviceId);
+                $flymasterEnabled = $trackerEnabled;
+                if ($flymasterEnabled === 1 && $flymasterSerial === '') {
+                    throw new RuntimeException('Vul je Flymaster serienummer in voordat je toestemming geeft.');
+                }
+            } elseif ($trackerEnabled === 1) {
+                throw new RuntimeException('Kies een tracker voordat je toestemming geeft.');
             }
             $stmt = $pdo->prepare(
                 'UPDATE rankings_track_collection_profiles
@@ -84,13 +96,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $error === null) {
                      flymaster_enabled = ?,
                      flymaster_enabled_at = CASE WHEN ? = 1 AND flymaster_enabled = 0 THEN UTC_TIMESTAMP() ELSE flymaster_enabled_at END,
                      flymaster_disabled_at = CASE WHEN ? = 0 AND flymaster_enabled = 1 THEN UTC_TIMESTAMP() ELSE flymaster_disabled_at END,
+                     skytraxx_device_id = NULL,
+                     skytraxx_enabled = 0,
+                     skytraxx_disabled_at = CASE WHEN skytraxx_enabled = 1 THEN UTC_TIMESTAMP() ELSE skytraxx_disabled_at END,
                      livetrack24_enabled = 0,
                      livetrack24_disabled_at = CASE WHEN livetrack24_enabled = 1 THEN UTC_TIMESTAMP() ELSE livetrack24_disabled_at END
                  WHERE id = ?'
             );
             $stmt->execute([
                 $displayName,
-                $flymasterSerial !== '' ? $flymasterSerial : null,
+                $flymasterSerial !== null && $flymasterSerial !== '' ? $flymasterSerial : null,
                 $flymasterEnabled,
                 $flymasterEnabled,
                 $flymasterEnabled,
@@ -105,6 +120,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $error === null) {
         }
     } catch (Throwable $e) {
         $error = $e->getMessage();
+    }
+}
+
+$selectedTrackerProvider = 'none';
+$selectedTrackerDeviceId = '';
+$selectedTrackerEnabled = false;
+if ($profile) {
+    if (!empty($profile['flymaster_serial']) || !empty($profile['flymaster_enabled'])) {
+        $selectedTrackerProvider = 'flymaster';
+        $selectedTrackerDeviceId = (string)($profile['flymaster_serial'] ?? '');
+        $selectedTrackerEnabled = !empty($profile['flymaster_enabled']);
     }
 }
 
@@ -133,7 +159,7 @@ app_page_start(app_site_name() . ' - Trackprofiel', [
       </form>
     <?php elseif (!$profile): ?>
       <p class="muted">
-        Als je een Flymaster tracker hebt, kun je deze in een trackprofiel met het serienummer aan RanglijstDeltavliegen koppelen. Hiermee kunnen we je tracklog voor toekomstige taken automatisch ophalen bij Flymaster. Een tracklog uploaden is dan niet meer nodig, maar kan nog steeds in geval je deze als backup wilt meegeven.
+        Als je een Flymaster tracker hebt, kun je deze in een trackprofiel aan RanglijstDeltavliegen koppelen. Hiermee kunnen we je tracklog voor toekomstige taken automatisch proberen op te halen. Een tracklog uploaden is dan niet meer nodig, maar kan nog steeds in geval je deze als backup wilt meegeven.
       </p>
       <p class="muted">
         Vul je e-mailadres in. Vervolgens krijg je een tijdelijke link waarmee je je trackprofiel kunt aanmaken/aanpassen zonder wachtwoord. Dit doe je eenmalig, de rest verzorgen wij.
@@ -147,7 +173,7 @@ app_page_start(app_site_name() . ' - Trackprofiel', [
         <p><button type="submit">Link naar mijn trackprofiel sturen</button></p>
       </form>
     <?php else: ?>
-      <p class="muted">Beheer hier de gegevens die gebruikt worden voor competitietaken en automatische Flymaster track-verzameling.</p>
+      <p class="muted">Beheer hier de gegevens die gebruikt worden voor competitietaken en automatische track-verzameling.</p>
       <div class="profile-status">
         <div>
           <span class="status-label">E-mail</span>
@@ -158,12 +184,12 @@ app_page_start(app_site_name() . ' - Trackprofiel', [
           <strong><?= h(trim((string)$profile['display_name']) !== '' ? (string)$profile['display_name'] : 'nog invullen') ?></strong>
         </div>
         <div>
-          <span class="status-label">Flymaster</span>
+          <span class="status-label">Tracker</span>
           <strong>
-            <?php if (!empty($profile['flymaster_enabled']) && !empty($profile['flymaster_serial'])): ?>
-              toestemming voor #<?= h($profile['flymaster_serial']) ?>
-            <?php elseif (!empty($profile['flymaster_serial'])): ?>
-              serienummer ingesteld
+            <?php if ($selectedTrackerProvider === 'flymaster' && $selectedTrackerEnabled && $selectedTrackerDeviceId !== ''): ?>
+              Flymaster #<?= h($selectedTrackerDeviceId) ?>
+            <?php elseif ($selectedTrackerProvider !== 'none' && $selectedTrackerDeviceId !== ''): ?>
+              Flymaster ingesteld
             <?php else: ?>
               niet ingesteld
             <?php endif; ?>
@@ -177,14 +203,20 @@ app_page_start(app_site_name() . ' - Trackprofiel', [
         <label>Naam in uitslagen
           <input type="text" name="display_name" required maxlength="160" autocomplete="name" value="<?= h($profile['display_name']) ?>">
         </label>
-        <label>Flymaster serienummer
-          <input type="text" name="flymaster_serial" inputmode="numeric" pattern="[0-9]{3,12}" maxlength="12" value="<?= h($profile['flymaster_serial'] ?? '') ?>" placeholder="bijvoorbeeld: 915477">
+        <label>Tracker
+          <select name="tracker_provider">
+            <option value="none" <?= $selectedTrackerProvider === 'none' ? 'selected' : '' ?>>Geen automatische tracker</option>
+            <option value="flymaster" <?= $selectedTrackerProvider === 'flymaster' ? 'selected' : '' ?>>Flymaster</option>
+          </select>
+        </label>
+        <label>Tracker ID
+          <input type="text" name="tracker_device_id" maxlength="80" value="<?= h($selectedTrackerDeviceId) ?>" placeholder="Flymaster serienummer">
         </label>
         <label class="check-row">
-          <input type="checkbox" name="flymaster_enabled" value="1" <?= !empty($profile['flymaster_enabled']) ? 'checked' : '' ?>>
-          Ik geef toestemming om publieke Flymaster replay-tracks voor competitietaken op te halen
+          <input type="checkbox" name="tracker_enabled" value="1" <?= $selectedTrackerEnabled ? 'checked' : '' ?>>
+          Ik geef toestemming om tracks voor competitietaken automatisch op te halen
         </label>
-        <p class="muted">We gebruiken alleen publieke Flymaster replay-gegevens als extra service voor taakreview. Handmatige uploads blijven de fallback wanneer een reconstructie niet goed genoeg is.</p>
+        <p class="muted">Voor Flymaster gebruiken we publieke replay-gegevens. Handmatige uploads blijven altijd de fallback.</p>
         <p class="actions">
           <button type="submit">Trackprofiel opslaan</button>
         </p>

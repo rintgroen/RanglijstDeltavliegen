@@ -159,13 +159,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $nomDistance = scoring_decimal_or_null($_POST['nominal_distance_km'] ?? '') ?? 50.0;
                 $nomTime = max(1, (int)($_POST['nominal_time_minutes'] ?? 90));
                 $leadingTimeRatio = scoring_gap2025_input_leading_time_ratio($_POST['leading_time_ratio_percent'] ?? null, $competition);
+                $jumpTheGunEnabled = isset($_POST['jump_the_gun_enabled']) ? 1 : 0;
+                $jumpSecondsPerPoint = scoring_gap2025_input_jump_seconds_per_point($_POST['jump_the_gun_seconds_per_point'] ?? null);
+                $jumpMaxSeconds = scoring_gap2025_input_jump_max_seconds($_POST['jump_the_gun_max_seconds'] ?? null);
                 $stmt = $pdo->prepare(
                     'INSERT INTO rankings_scoring_tasks
                      (competition_id, name, task_date, window_open_at, window_close_at, task_deadline_at, reporting_deadline_at, task_type,
                       minimum_distance_km, nominal_distance_km, nominal_time_minutes, leading_time_ratio,
+                      jump_the_gun_enabled, jump_the_gun_seconds_per_point, jump_the_gun_max_seconds,
                       use_distance_points, use_time_points, use_departure_points, use_leading_points,
                       use_arrival_position_points, use_arrival_time_points)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 );
                 $stmt->execute([
                     $competitionId,
@@ -180,6 +184,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $nomDistance,
                     $nomTime,
                     $leadingTimeRatio,
+                    $jumpTheGunEnabled,
+                    $jumpSecondsPerPoint,
+                    $jumpMaxSeconds,
                     isset($_POST['use_distance_points']) ? 1 : 0,
                     isset($_POST['use_time_points']) ? 1 : 0,
                     isset($_POST['use_departure_points']) ? 1 : 0,
@@ -235,6 +242,7 @@ $defaultClose = date('Y-m-d\T19:00');
 $defaultTaskDeadline = $defaultClose;
 $defaultReportingDeadline = (new DateTimeImmutable($defaultClose, scoring_timezone()))->modify('+30 minutes')->format('Y-m-d\TH:i');
 $defaultLeadingTimeRatioPercent = app_format_compact_number(scoring_gap2025_leading_time_ratio_percent($competition), 1);
+$defaultJumpTheGunEnabled = scoring_gap2025_default_jump_the_gun_enabled($competition);
 
 app_page_start($competition['name'] . ' - Scoring', [
     'active_scoring' => 'dashboard',
@@ -509,8 +517,15 @@ app_page_start($competition['name'] . ' - Scoring', [
             <label>Leading Time Ratio (%)
               <input type="number" name="leading_time_ratio_percent" value="<?= h($defaultLeadingTimeRatioPercent) ?>" min="0" max="26" step="0.1">
             </label>
+            <label>JTG seconden per punt
+              <input type="number" name="jump_the_gun_seconds_per_point" value="2.0" min="0.1" max="600" step="0.1">
+            </label>
+            <label>JTG max seconden
+              <input type="number" name="jump_the_gun_max_seconds" value="300" min="0" max="3600" step="1">
+            </label>
           </div>
           <div class="checkbox-grid">
+            <label><input type="checkbox" name="jump_the_gun_enabled" <?= $defaultJumpTheGunEnabled ? 'checked' : '' ?>> Jump-the-Gun toepassen</label>
             <label><input type="checkbox" name="use_distance_points" checked> Afstandspunten</label>
             <label><input type="checkbox" name="use_time_points" checked> Tijdspunten</label>
             <label><input type="checkbox" name="use_leading_points" checked> Leadingpunten</label>

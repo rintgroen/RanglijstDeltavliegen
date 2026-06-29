@@ -248,6 +248,8 @@
         center: [lat, lon],
         name: tp.name || 'Taakpunt',
         radius: Math.max(0, Number(tp.radius_m) || 0),
+        zoneType: tp.zone_type || 'cylinder',
+        line: tp.line || null,
         role: tp.role,
         sequence: tp.sequence || ''
       };
@@ -310,17 +312,28 @@
     turnpoints.forEach(function (tp) {
       var role = styles[tp.role] ? tp.role : 'normal';
       var style = styles[role];
-      var circle = window.L.circle(tp.center, {
-        color: style.color,
-        dashArray: style.dashArray,
-        fillColor: style.fillColor,
-        fillOpacity: style.fillOpacity,
-        radius: tp.radius,
-        weight: style.weight
-      }).addTo(map);
       var label = escapeHtml(tp.sequence + '. ' + tp.name);
-      circle.bindPopup('<strong>' + label + '</strong><br>' + escapeHtml(roleLabels[role]) + '<br>Radius: ' + Math.round(tp.radius) + ' m');
-      taskLayers.push(circle);
+      if ((tp.zoneType === 'line' || tp.zoneType === 'goal_line') && tp.line && Array.isArray(tp.line.p1) && Array.isArray(tp.line.p2)) {
+        var lineLayer = window.L.polyline([tp.line.p1, tp.line.p2], {
+          color: style.color,
+          dashArray: style.dashArray,
+          opacity: 0.95,
+          weight: style.weight
+        }).addTo(map);
+        lineLayer.bindPopup('<strong>' + label + '</strong><br>' + escapeHtml(roleLabels[role]) + '<br>' + escapeHtml(tp.zoneType === 'goal_line' ? 'Goallijn' : 'Lijn'));
+        taskLayers.push(lineLayer);
+      } else {
+        var circle = window.L.circle(tp.center, {
+          color: style.color,
+          dashArray: style.dashArray,
+          fillColor: style.fillColor,
+          fillOpacity: style.fillOpacity,
+          radius: tp.radius,
+          weight: style.weight
+        }).addTo(map);
+        circle.bindPopup('<strong>' + label + '</strong><br>' + escapeHtml(roleLabels[role]) + '<br>Radius: ' + Math.round(tp.radius) + ' m');
+        taskLayers.push(circle);
+      }
       var marker = window.L.circleMarker(tp.center, {
         color: style.color,
         fillColor: '#ffffff',
@@ -489,6 +502,8 @@
       return {
         center: [lat, lon],
         radius: Math.max(0, Number(tp.radius_m) || 0),
+        zoneType: tp.zone_type || 'cylinder',
+        line: tp.line || null,
         role: tp.role,
         sequence: tp.sequence || '',
         name: tp.name || 'Taakpunt'
@@ -497,15 +512,26 @@
     taskPoints.forEach(function (tp) {
       var role = styles[tp.role] ? tp.role : 'normal';
       var style = styles[role];
-      rememberCircleBounds(tp.center, tp.radius);
-      layers.push(window.L.circle(tp.center, {
-        color: style.color,
-        dashArray: style.dashArray,
-        fillColor: style.fillColor,
-        fillOpacity: style.fillOpacity,
-        radius: tp.radius,
-        weight: style.weight
-      }).addTo(map));
+      if ((tp.zoneType === 'line' || tp.zoneType === 'goal_line') && tp.line && Array.isArray(tp.line.p1) && Array.isArray(tp.line.p2)) {
+        rememberBounds(tp.line.p1);
+        rememberBounds(tp.line.p2);
+        layers.push(window.L.polyline([tp.line.p1, tp.line.p2], {
+          color: style.color,
+          dashArray: style.dashArray,
+          opacity: 0.9,
+          weight: style.weight
+        }).addTo(map));
+      } else {
+        rememberCircleBounds(tp.center, tp.radius);
+        layers.push(window.L.circle(tp.center, {
+          color: style.color,
+          dashArray: style.dashArray,
+          fillColor: style.fillColor,
+          fillOpacity: style.fillOpacity,
+          radius: tp.radius,
+          weight: style.weight
+        }).addTo(map));
+      }
       layers.push(window.L.circleMarker(tp.center, {
         color: style.color,
         fillColor: '#ffffff',
@@ -837,6 +863,52 @@
     });
   }
 
+  function setupTaskZoneControls(container) {
+    var select = container.querySelector('[data-zone-select]');
+    if (!select) {
+      return;
+    }
+
+    var summary = container.querySelector('[data-zone-summary]');
+    var summaries = {
+      cylinder: 'Cylinder: gebruik waypoint en radius. Lijnvelden blijven verborgen.',
+      line: 'Lijn: gebruik waypoint, orientatie, offset en halve lijn. Radius en goallijnlengte worden hierbij niet gebruikt.',
+      goal_line: 'Goallijn: gebruik waypoint, radius voor de halve cirkel achter de lijn, en de goallijnlengte.'
+    };
+
+    function allowsZone(element, zone) {
+      return (element.getAttribute('data-zone-visible') || '').split(/\s+/).indexOf(zone) !== -1;
+    }
+
+    function setFieldControls(field, isVisible) {
+      field.querySelectorAll('input, select, textarea, button').forEach(function (control) {
+        control.disabled = !isVisible;
+        if (control.hasAttribute('data-zone-required')) {
+          control.required = isVisible;
+        }
+      });
+    }
+
+    function selectedZone() {
+      return ['cylinder', 'line', 'goal_line'].indexOf(select.value) !== -1 ? select.value : 'cylinder';
+    }
+
+    function updateZoneFields() {
+      var zone = selectedZone();
+      container.querySelectorAll('[data-zone-visible]').forEach(function (field) {
+        var isVisible = allowsZone(field, zone);
+        field.hidden = !isVisible;
+        setFieldControls(field, isVisible);
+      });
+      if (summary) {
+        summary.textContent = summaries[zone] || summaries.cylinder;
+      }
+    }
+
+    select.addEventListener('change', updateZoneFields);
+    updateZoneFields();
+  }
+
   function setupPublicNavToggle() {
     var button = document.querySelector('[data-public-nav-toggle]');
     if (!button) {
@@ -880,6 +952,7 @@
     setupPublicNavToggle();
     document.querySelectorAll('.memory-showcase').forEach(setupMemoryShowcase);
     document.querySelectorAll('[data-tabs]').forEach(setupTabs);
+    document.querySelectorAll('[data-task-zone-container]').forEach(setupTaskZoneControls);
     document.querySelectorAll('.track-preview').forEach(setupTrackPreviewMap);
     document.querySelectorAll('.task-map').forEach(setupTaskMap);
     document.querySelectorAll('[data-review-workspace]').forEach(setupReviewWorkspace);
